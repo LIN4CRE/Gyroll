@@ -1,5 +1,5 @@
 import React from 'react';
-import { Pause, RotateCcw, Volume2, VolumeX, Compass, ShieldAlert, Sparkles } from 'lucide-react';
+import { Pause, RotateCcw, Volume2, VolumeX, Compass, ShieldAlert, Flag, Zap, TrendingUp, TrendingDown } from 'lucide-react';
 import { GyroSensorState } from '../game/input';
 import { TrackDefinition } from '../game/types';
 
@@ -10,6 +10,8 @@ interface GameHUDProps {
   falls: number;
   currentCheckpoint: number;
   totalCheckpoints: number;
+  progressPercent?: number;
+  checkpointSplit?: { index: number; name: string; time: number; deltaGold: number };
   isRecovering: boolean;
   isMuted: boolean;
   onToggleMute: () => void;
@@ -28,6 +30,8 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   falls,
   currentCheckpoint,
   totalCheckpoints,
+  progressPercent = 0,
+  checkpointSplit,
   isRecovering,
   isMuted,
   onToggleMute,
@@ -49,75 +53,157 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   // Speed in km/h
   const speedKmh = Math.round(speed * 3.6);
 
-  // Tilt bubble coordinates (-1 to 1 mapped to ±16px offset)
+  // Tilt bubble coordinates (-1 to 1 mapped to ±18px offset)
   const bubbleX = sensorState.tiltPercentX * 18;
   const bubbleY = -sensorState.tiltPercentY * 18;
 
+  // High speed threshold (> 50 km/h)
+  const isHighSpeed = speedKmh >= 50;
+  const speedRatio = Math.min(1, Math.max(0, (speedKmh - 45) / 45)); // 0 to 1 scaling above 45 km/h
+
   return (
-    <div className="absolute inset-0 pointer-events-none select-none z-10 flex flex-col justify-between p-4 md:p-6 font-sans">
+    <div className="absolute inset-0 pointer-events-none select-none z-10 flex flex-col justify-between p-4 md:p-6 font-sans overflow-hidden">
+      {/* Aerodynamic Speed Lines (active during high speed) */}
+      {isHighSpeed && (
+        <div
+          className="absolute inset-0 pointer-events-none transition-opacity duration-300"
+          style={{ opacity: Math.min(0.85, speedRatio * 0.9) }}
+        >
+          {/* Subtle vignette + edge streaks */}
+          <div className="absolute inset-0 bg-radial from-transparent via-transparent to-cyan-500/10" />
+          <svg className="w-full h-full" xmlns="http://www.w3.org/2000/svg">
+            <line x1="2%" y1="10%" x2="18%" y2="28%" stroke="rgba(34, 211, 238, 0.45)" strokeWidth="1.5" strokeDasharray="60 30" />
+            <line x1="98%" y1="12%" x2="82%" y2="30%" stroke="rgba(34, 211, 238, 0.45)" strokeWidth="1.5" strokeDasharray="50 35" />
+            <line x1="1%" y1="45%" x2="22%" y2="52%" stroke="rgba(56, 189, 248, 0.5)" strokeWidth="2" strokeDasharray="90 40" />
+            <line x1="99%" y1="48%" x2="78%" y2="54%" stroke="rgba(56, 189, 248, 0.5)" strokeWidth="2" strokeDasharray="90 40" />
+            <line x1="3%" y1="80%" x2="25%" y2="72%" stroke="rgba(34, 211, 238, 0.4)" strokeWidth="1.5" strokeDasharray="70 45" />
+            <line x1="97%" y1="82%" x2="75%" y2="74%" stroke="rgba(34, 211, 238, 0.4)" strokeWidth="1.5" strokeDasharray="70 45" />
+          </svg>
+        </div>
+      )}
+
       {/* Top Perimeter Header */}
-      <div className="flex items-start justify-between w-full">
-        {/* Top-Left: Track Name & Checkpoint Pips */}
-        <div className="flex flex-col gap-1.5 pointer-events-auto">
-          <div className="flex items-center gap-2 bg-slate-900/80 border border-slate-700/80 px-3.5 py-1.5 rounded-lg">
-            <span
-              className="w-2.5 h-2.5 rounded-full"
-              style={{ backgroundColor: track.themeColor }}
-            />
-            <span className="font-bold text-xs md:text-sm text-white tracking-wide">
-              {track.name}
-            </span>
+      <div className="flex flex-col gap-2.5 w-full">
+        <div className="flex items-start justify-between w-full">
+          {/* Top-Left: Track Name & Checkpoint Pips */}
+          <div className="flex flex-col gap-1.5 pointer-events-auto">
+            <div className="flex items-center gap-2 bg-slate-900/80 border border-slate-700/80 px-3.5 py-1.5 rounded-lg shadow-md">
+              <span
+                className="w-2.5 h-2.5 rounded-full ring-2 ring-white/20"
+                style={{ backgroundColor: track.themeColor }}
+              />
+              <span className="font-bold text-xs md:text-sm text-white tracking-wide">
+                {track.name}
+              </span>
+            </div>
+
+            {/* Checkpoint Status */}
+            <div className="flex items-center gap-2 bg-slate-900/70 border border-slate-800 px-3 py-1 rounded-md text-[11px] text-slate-300">
+              <span>CHECKPOINT:</span>
+              <span className="font-mono font-bold text-cyan-400">
+                {currentCheckpoint} / {totalCheckpoints}
+              </span>
+            </div>
           </div>
 
-          {/* Checkpoint Status */}
-          <div className="flex items-center gap-2 bg-slate-900/70 border border-slate-800 px-3 py-1 rounded-md text-[11px] text-slate-300">
-            <span>CHECKPOINT:</span>
-            <span className="font-mono font-bold text-cyan-400">
-              {currentCheckpoint} / {totalCheckpoints}
-            </span>
+          {/* Top-Center: Large Central Chrono Timer */}
+          <div className="flex flex-col items-center pointer-events-auto">
+            <div className="bg-slate-900/85 border border-cyan-500/40 rounded-xl px-5 py-1.5 shadow-[0_4px_16px_rgba(0,0,0,0.5)] flex items-center gap-2">
+              <span className="font-mono font-bold text-xl md:text-2xl text-cyan-300 tracking-wider tabular-nums">
+                {formattedTime}
+              </span>
+              {isHighSpeed && (
+                <span title="High Velocity!">
+                  <Zap className="w-4 h-4 text-amber-400 animate-pulse" />
+                </span>
+              )}
+            </div>
+            {/* Target Star Goals */}
+            <div className="flex items-center gap-2 mt-1 text-[10px] text-slate-400 font-mono">
+              <span className="text-amber-400">★ {track.targetTimes.gold}s</span>
+              <span className="text-slate-400">★ {track.targetTimes.silver}s</span>
+              <span className="text-amber-700">★ {track.targetTimes.bronze}s</span>
+            </div>
+          </div>
+
+          {/* Top-Right: Quick Utilities */}
+          <div className="flex items-center gap-1.5 pointer-events-auto">
+            <button
+              onClick={onToggleMute}
+              className="p-2 rounded-lg bg-slate-900/80 border border-slate-700/80 text-slate-300 hover:text-white hover:bg-slate-800 transition active:scale-95 cursor-pointer shadow-md"
+              title="Mute Audio [M]"
+            >
+              {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+            </button>
+            <button
+              onClick={onRestart}
+              className="p-2 rounded-lg bg-slate-900/80 border border-slate-700/80 text-slate-300 hover:text-white hover:bg-slate-800 transition active:scale-95 cursor-pointer shadow-md"
+              title="Restart Track [R]"
+            >
+              <RotateCcw className="w-4 h-4" />
+            </button>
+            <button
+              onClick={onPause}
+              className="p-2 rounded-lg bg-slate-900/80 border border-slate-700/80 text-slate-300 hover:text-white hover:bg-slate-800 transition active:scale-95 cursor-pointer shadow-md"
+              title="Pause [Esc]"
+            >
+              <Pause className="w-4 h-4" />
+            </button>
           </div>
         </div>
 
-        {/* Top-Center: Large Central Chrono Timer */}
-        <div className="flex flex-col items-center pointer-events-auto">
-          <div className="bg-slate-900/85 border border-cyan-500/40 rounded-xl px-5 py-1.5 shadow-[0_4px_16px_rgba(0,0,0,0.5)]">
-            <span className="font-mono font-bold text-xl md:text-2xl text-cyan-300 tracking-wider tabular-nums">
-              {formattedTime}
-            </span>
+        {/* Top Progress Bar: Course Progress Track */}
+        <div className="w-full max-w-xl mx-auto px-4 pointer-events-auto">
+          <div className="relative flex items-center bg-slate-900/80 border border-slate-800 rounded-full px-3 py-1.5 shadow-md">
+            <span className="text-[10px] font-bold text-slate-400 mr-2 tracking-wider">START</span>
+            <div className="relative flex-1 h-2 bg-slate-800 rounded-full overflow-hidden">
+              {/* Progress bar fill */}
+              <div
+                className="h-full bg-linear-to-r from-cyan-500 via-sky-400 to-emerald-400 transition-all duration-150 ease-out"
+                style={{ width: `${progressPercent}%` }}
+              />
+            </div>
+            {/* Flag icon at finish */}
+            <div className="flex items-center gap-1 ml-2 text-[10px] font-bold text-emerald-400">
+              <Flag className="w-3 h-3 text-emerald-400" />
+              <span className="font-mono">{progressPercent}%</span>
+            </div>
           </div>
-          {/* Target Star Goals */}
-          <div className="flex items-center gap-2 mt-1 text-[10px] text-slate-400 font-mono">
-            <span className="text-amber-400">★ {track.targetTimes.gold}s</span>
-            <span className="text-slate-400">★ {track.targetTimes.silver}s</span>
-            <span className="text-amber-700">★ {track.targetTimes.bronze}s</span>
-          </div>
-        </div>
-
-        {/* Top-Right: Quick Utilities */}
-        <div className="flex items-center gap-1.5 pointer-events-auto">
-          <button
-            onClick={onToggleMute}
-            className="p-2 rounded-lg bg-slate-900/80 border border-slate-700/80 text-slate-300 hover:text-white hover:bg-slate-800 transition active:scale-95 cursor-pointer"
-            title="Mute Audio [M]"
-          >
-            {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-          </button>
-          <button
-            onClick={onRestart}
-            className="p-2 rounded-lg bg-slate-900/80 border border-slate-700/80 text-slate-300 hover:text-white hover:bg-slate-800 transition active:scale-95 cursor-pointer"
-            title="Restart Track [R]"
-          >
-            <RotateCcw className="w-4 h-4" />
-          </button>
-          <button
-            onClick={onPause}
-            className="p-2 rounded-lg bg-slate-900/80 border border-slate-700/80 text-slate-300 hover:text-white hover:bg-slate-800 transition active:scale-95 cursor-pointer"
-            title="Pause [Esc]"
-          >
-            <Pause className="w-4 h-4" />
-          </button>
         </div>
       </div>
+
+      {/* Checkpoint Split Alert Banner */}
+      {checkpointSplit && (
+        <div className="mx-auto flex flex-col items-center gap-1 px-5 py-2 rounded-xl bg-slate-900/95 border border-cyan-400/80 shadow-[0_0_20px_rgba(34,211,238,0.35)] animate-fade-in pointer-events-none">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold uppercase tracking-widest text-cyan-300">
+              Checkpoint {checkpointSplit.index}
+            </span>
+            <span className="font-mono font-bold text-sm text-white">
+              {checkpointSplit.time.toFixed(2)}s
+            </span>
+          </div>
+          <div
+            className={`flex items-center gap-1 text-[11px] font-bold font-mono px-2 py-0.5 rounded ${
+              checkpointSplit.deltaGold <= 0
+                ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-500/40'
+                : 'bg-amber-950/80 text-amber-300 border border-amber-500/40'
+            }`}
+          >
+            {checkpointSplit.deltaGold <= 0 ? (
+              <>
+                <TrendingUp className="w-3 h-3 text-emerald-400" />
+                <span>{(checkpointSplit.deltaGold).toFixed(2)}s vs Gold Pace</span>
+              </>
+            ) : (
+              <>
+                <TrendingDown className="w-3 h-3 text-amber-400" />
+                <span>+{checkpointSplit.deltaGold.toFixed(2)}s vs Gold Pace</span>
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Center Void Notification: Respawn Banner */}
       {isRecovering && (

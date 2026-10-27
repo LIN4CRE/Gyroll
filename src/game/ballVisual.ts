@@ -17,6 +17,7 @@ export interface BallVisualInstance {
   updateSkin: (skin: BallSkin) => void;
   updateTrail: (trail: BallTrail, config?: TrailCustomConfig) => void;
   emitBurst: (position: Vector3D, count?: number) => void;
+  triggerSquash: (intensity?: number) => void;
   clearParticles: () => void;
   dispose: () => void;
 }
@@ -208,12 +209,28 @@ export function createBallVisual(
     particleMesh.instanceMatrix.needsUpdate = true;
   }
 
+  let squashScaleY = 1.0;
+  let squashScaleXZ = 1.0;
+
+  function triggerSquash(intensity = 0.5) {
+    const clamped = Math.max(0.1, Math.min(1.0, intensity));
+    squashScaleY = 1.0 - clamped * 0.28;
+    squashScaleXZ = 1.0 + clamped * 0.16;
+  }
+
   return {
     group,
     ballMesh,
     shadowMesh,
+    triggerSquash,
     update: (pos, rot, groundY, onGround, dt, speed) => {
       globalTime += dt;
+
+      // Smoothly restore squash deformation back to 1.0
+      const recoveryDamp = 1 - Math.exp(-20 * dt);
+      squashScaleY += (1.0 - squashScaleY) * recoveryDamp;
+      squashScaleXZ += (1.0 - squashScaleXZ) * recoveryDamp;
+      ballMesh.scale.set(squashScaleXZ, squashScaleY, squashScaleXZ);
 
       // Position ball
       ballMesh.position.set(pos.x, pos.y, pos.z);
@@ -225,7 +242,7 @@ export function createBallVisual(
         shadowMesh.position.set(pos.x, groundY + 0.02, pos.z);
         const heightAboveGround = Math.max(0, pos.y - (groundY + radius));
         shadowMat.opacity = Math.max(0, 0.45 - heightAboveGround * 0.2);
-        const scale = 1 + heightAboveGround * 0.3;
+        const scale = (1 + heightAboveGround * 0.3) * squashScaleXZ;
         shadowMesh.scale.set(scale, scale, scale);
       } else {
         shadowMesh.visible = false;

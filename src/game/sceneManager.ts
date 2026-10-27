@@ -32,6 +32,13 @@ export interface SceneManagerCallbacks {
     currentCheckpoint: number;
     totalCheckpoints: number;
     isRecovering: boolean;
+    progressPercent: number;
+    checkpointSplit?: {
+      index: number;
+      name: string;
+      time: number;
+      deltaGold: number;
+    };
   }) => void;
 }
 
@@ -68,6 +75,18 @@ export class SceneManager {
 
   // Demonstration / Showcase variables
   private demoAngle = 0;
+
+  // Camera banking & physical game feel
+  private currentCameraBank = 0;
+  private wasOnGround = true;
+  private previousVelocityY = 0;
+  private activeCheckpointSplit?: {
+    index: number;
+    name: string;
+    time: number;
+    deltaGold: number;
+    timer: number;
+  };
 
   constructor(
     container: HTMLElement,
@@ -408,6 +427,19 @@ export class SceneManager {
             (o) => o.id === ev.obstacleId
           );
           const name = (cpObs as any)?.name || `Checkpoint ${this.ballPhysics.lastCheckpointIndex}`;
+          
+          // Split calculation against gold pace
+          const totalCps = this.currentTrack.obstacles.filter((o) => o.type === 'checkpoint').length;
+          const expectedGoldSplit = (this.currentTrack.targetTimes.gold / (totalCps + 1)) * this.ballPhysics.lastCheckpointIndex;
+          const deltaGold = this.runTimer - expectedGoldSplit;
+          this.activeCheckpointSplit = {
+            index: this.ballPhysics.lastCheckpointIndex,
+            name,
+            time: this.runTimer,
+            deltaGold,
+            timer: 3.5,
+          };
+
           this.callbacks.onCheckpoint(this.ballPhysics.lastCheckpointIndex, name);
         } else if (ev.type === 'finish') {
           sound.playFinish();
@@ -431,8 +463,20 @@ export class SceneManager {
           haptics.boost();
         } else if (ev.type === 'bounce') {
           sound.playBounce();
+          if (this.ballVisual) this.ballVisual.triggerSquash(0.6);
         }
       }
+
+      // Landing detection with squash & stretch
+      if (!this.wasOnGround && this.ballPhysics.onGround && this.previousVelocityY < -2.4) {
+        if (this.ballVisual) {
+          this.ballVisual.triggerSquash(Math.min(1.0, Math.abs(this.previousVelocityY) / 12));
+        }
+        sound.playBounce();
+        haptics.obstacleHit(0.35);
+      }
+      this.wasOnGround = this.ballPhysics.onGround;
+      this.previousVelocityY = this.ballPhysics.velocity.y;
 
       const speed = Math.hypot(this.ballPhysics.velocity.x, this.ballPhysics.velocity.z);
       sound.updateRollingRumble(speed, this.ballPhysics.onGround);
@@ -468,8 +512,10 @@ export class SceneManager {
       this.camera.position.y += (targetCamY - this.camera.position.y) * camDamp;
       this.camera.position.z += (targetCamZ - this.camera.position.z) * camDamp;
 
+      // Dynamic Pitch Look-Ahead (avoids blind drops on ramps and leaps)
+      const pitchAdjustment = Math.max(-2.5, Math.min(1.2, this.ballPhysics.velocity.y * 0.12));
       const targetLookX = this.ballPhysics.position.x * 0.65;
-      const targetLookY = this.ballPhysics.position.y + 1.2;
+      const targetLookY = this.ballPhysics.position.y + 1.2 + pitchAdjustment;
       const targetLookZ = this.ballPhysics.position.z - 8.5;
 
       this._camLookTarget.x += (targetLookX - this._camLookTarget.x) * camDamp;
@@ -478,10 +524,39 @@ export class SceneManager {
 
       this.camera.lookAt(this._camLookTarget);
 
+      // Dynamic Camera Banking on lateral steering velocity
+      const targetBank = -Math.max(-0.06, Math.min(0.06, this.ballPhysics.velocity.x * 0.007));
+      this.currentCameraBank += (targetBank - this.currentCameraBank) * (1 - Math.exp(-12 * dt));
+      this.camera.rotation.z += this.currentCameraBank;
+
       if (this.cameraRotationShake > 0.01) {
         this.camera.position.x += (Math.random() - 0.5) * this.cameraRotationShake * 0.3;
         this.camera.position.y += (Math.random() - 0.5) * this.cameraRotationShake * 0.3;
+        this.camera.rotation.z += (Math.random() - 0.5) * this.cameraRotationShake * 0.04;
         this.cameraRotationShake = Math.max(0, this.cameraRotationShake - dt * 3.0);
+      }
+
+      // Track progress percentage
+      const startZ = this.currentTrack.spawnPoint.z;
+      const finishZ = this.currentTrack.finishZ;
+      const progressPercent = Math.max(
+        0,
+        Math.min(100, Math.round(((startZ - this.ballPhysics.position.z) / (startZ - finishZ)) * 100))
+      );
+
+      // Checkpoint split timer
+      let splitToSend: { index: number; name: string; time: number; deltaGold: number } | undefined;
+      if (this.activeCheckpointSplit) {
+        this.activeCheckpointSplit.timer -= dt;
+        splitToSend = {
+          index: this.activeCheckpointSplit.index,
+          name: this.activeCheckpointSplit.name,
+          time: this.activeCheckpointSplit.time,
+          deltaGold: this.activeCheckpointSplit.deltaGold,
+        };
+        if (this.activeCheckpointSplit.timer <= 0) {
+          this.activeCheckpointSplit = undefined;
+        }
       }
 
       const totalCheckpoints = this.currentTrack.obstacles.filter(
@@ -495,6 +570,8 @@ export class SceneManager {
         currentCheckpoint: this.ballPhysics.lastCheckpointIndex,
         totalCheckpoints,
         isRecovering: this.ballPhysics.isRecovering,
+        progressPercent,
+        checkpointSplit: splitToSend,
       });
     }
   }

@@ -43,13 +43,23 @@ export default function App() {
   const [selectedTrack, setSelectedTrack] = useState<TrackDefinition>(TRACKS[0]);
 
   // Live HUD State
-  const [hudStats, setHudStats] = useState({
+  const [hudStats, setHudStats] = useState<{
+    speed: number;
+    time: number;
+    falls: number;
+    currentCheckpoint: number;
+    totalCheckpoints: number;
+    isRecovering: boolean;
+    progressPercent?: number;
+    checkpointSplit?: { index: number; name: string; time: number; deltaGold: number };
+  }>({
     speed: 0,
     time: 0,
     falls: 0,
     currentCheckpoint: 0,
     totalCheckpoints: 0,
     isRecovering: false,
+    progressPercent: 0,
   });
 
   // Sensor state for indicators and bubble level
@@ -420,6 +430,8 @@ export default function App() {
           falls={hudStats.falls}
           currentCheckpoint={hudStats.currentCheckpoint}
           totalCheckpoints={hudStats.totalCheckpoints}
+          progressPercent={hudStats.progressPercent}
+          checkpointSplit={hudStats.checkpointSplit}
           isRecovering={hudStats.isRecovering}
           isMuted={progress.settings.isMuted}
           onToggleMute={handleToggleMute}
