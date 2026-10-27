@@ -141,22 +141,21 @@ export function buildTrack3D(track: TrackDefinition): BuiltTrack {
       segGroup.add(leftRail, rightRail);
     }
 
-    // Orient and position segment
+    // Orient and position segment accurately matching physics trajectory
     segGroup.position.set(midX, midY, midZ);
 
-    // Pitch angle along incline
-    const pitch = Math.atan2(dy, -dz);
-    const yaw = Math.atan2(dx, -dz);
-    segGroup.rotation.x = pitch;
-    segGroup.rotation.y = yaw;
+    if (length > 0.001) {
+      const segDir = new THREE.Vector3(dx, dy, dz).normalize();
+      segGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), segDir);
+    }
 
-    // Pillar support descending into sky fog
+    // Vertical structural pillar support descending into sky fog
     if (Math.abs(dz) > 15) {
       const pillarGeo = new THREE.CylinderGeometry(0.8, 1.2, 35, 12);
       const pillar = new THREE.Mesh(pillarGeo, concreteMat);
-      pillar.position.set(0, -18, 0);
+      pillar.position.set(midX, midY - 18, midZ);
       pillar.receiveShadow = true;
-      segGroup.add(pillar);
+      group.add(pillar);
     }
 
     group.add(segGroup);

@@ -7,6 +7,7 @@ import {
   stepPhysics,
   calculateStars,
   GRAVITY,
+  MAX_FORWARD_SPEED,
 } from './physics';
 import { TrackDefinition } from './types';
 
@@ -214,10 +215,43 @@ test('stepPhysics respects speed limits and prevents uncontrollable runaway spee
     0.016
   );
 
-  // Ball forward velocity must be clamped to MAX_FORWARD_SPEED (-12.0)
+  // Ball forward velocity must be clamped to dynamic max forward speed
+  const expectedMax = MAX_FORWARD_SPEED * 1.25;
   assert.ok(
-    result.state.velocity.z >= -12.0,
-    `Forward velocity (${result.state.velocity.z}) must not exceed MAX_FORWARD_SPEED (-12.0)`
+    result.state.velocity.z >= -expectedMax,
+    `Forward velocity (${result.state.velocity.z}) must not exceed dynamic limit (-${expectedMax})`
   );
+});
+
+test('getGroundAt accurately tracks angled chicane centerline', () => {
+  const angledTrack: TrackDefinition = {
+    ...mockTrack,
+    segments: [
+      {
+        id: 'chicane',
+        startX: 0,
+        startY: 0,
+        startZ: 0,
+        endX: -4,
+        endY: 0,
+        endZ: -40,
+        width: 4,
+        surface: 'normal',
+        hasRails: false,
+      },
+    ],
+  };
+
+  // At z = -20 (halfway), center X is -2. Ball at x = -2 must be on ground
+  const groundCenter = getGroundAt({ x: -2, y: 0.5, z: -20 }, 0.5, angledTrack.segments);
+  assert.ok(groundCenter !== null, 'Center of angled segment must register ground');
+
+  // Ball at x = 0 at z = -20 is 2 units away from centerline (edge of width 4)
+  const groundEdge = getGroundAt({ x: 0, y: 0.5, z: -20 }, 0.5, angledTrack.segments);
+  assert.ok(groundEdge !== null, 'Near edge of angled segment must register ground');
+
+  // Ball at x = 3 at z = -20 is 5 units away, off-track
+  const groundOff = getGroundAt({ x: 3, y: 0.5, z: -20 }, 0.5, angledTrack.segments);
+  assert.equal(groundOff, null, 'Beyond width of angled segment must be null');
 });
 

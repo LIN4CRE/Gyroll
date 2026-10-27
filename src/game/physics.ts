@@ -8,23 +8,23 @@ import {
   Vector3D,
 } from './types';
 
-export const GRAVITY = -16;
+export const GRAVITY = -18;
 export const DEFAULT_BALL_RADIUS = 0.5;
 export const DEFAULT_BALL_MASS = 1.0;
-export const BASE_FORWARD_ACCEL = 6.5;
-export const MAX_FORWARD_SPEED = 12.0;
-export const STEER_FORCE = 20;
-export const MAX_LATERAL_SPEED = 8.0;
-export const ROLLING_FRICTION = 0.985;
+export const BASE_FORWARD_ACCEL = 10.5;
+export const MAX_FORWARD_SPEED = 18.5;
+export const STEER_FORCE = 26.0;
+export const MAX_LATERAL_SPEED = 11.0;
+export const ROLLING_FRICTION = 0.988;
 export const ICE_FRICTION = 0.998;
-export const AIR_DRAG = 0.992;
+export const AIR_DRAG = 0.994;
 export const RESTITUTION = 0.35; // bounce factor
 
 export function createInitialBallState(spawnPoint: Vector3D): BallPhysicsState {
   return {
     position: { x: spawnPoint.x, y: spawnPoint.y + DEFAULT_BALL_RADIUS, z: spawnPoint.z },
-    velocity: { x: 0, y: 0, z: -1.0 },
-    angularVelocity: { x: 1.0 / DEFAULT_BALL_RADIUS, y: 0, z: 0 },
+    velocity: { x: 0, y: 0, z: -3.5 },
+    angularVelocity: { x: 3.5 / DEFAULT_BALL_RADIUS, y: 0, z: 0 },
     radius: DEFAULT_BALL_RADIUS,
     mass: DEFAULT_BALL_MASS,
     onGround: true,
@@ -416,8 +416,8 @@ export function stepPhysics(
         y: respawnPos.y + state.radius + 0.15,
         z: respawnPos.z,
       };
-      state.velocity = { x: 0, y: 0, z: -2.0 };
-      state.angularVelocity = { x: 2.0 / state.radius, y: 0, z: 0 };
+      state.velocity = { x: 0, y: 0, z: -3.5 };
+      state.angularVelocity = { x: 3.5 / state.radius, y: 0, z: 0 };
       state.onGround = true;
     }
     return { state, events };
@@ -470,7 +470,7 @@ export function stepPhysics(
       if (surfaceType === 'ice') {
         friction = ICE_FRICTION;
       } else if (surfaceType === 'boost') {
-        state.velocity.z = Math.min(state.velocity.z, -MAX_FORWARD_SPEED * 1.3);
+        state.velocity.z = Math.min(state.velocity.z, -MAX_FORWARD_SPEED * 1.35);
         events.push({
           type: 'boost',
           position: { ...state.position },
@@ -509,11 +509,12 @@ export function stepPhysics(
     if (state.onGround) {
       state.velocity.z -= forwardAccel * subDt;
       // Cap max forward speed (negative Z direction)
-      if (state.velocity.z < -MAX_FORWARD_SPEED) {
-        state.velocity.z = -MAX_FORWARD_SPEED;
-      } else if (state.velocity.z > 1.5) {
+      const dynamicMax = input.throttle > 0.1 ? MAX_FORWARD_SPEED * 1.2 : MAX_FORWARD_SPEED;
+      if (state.velocity.z < -dynamicMax) {
+        state.velocity.z = -dynamicMax;
+      } else if (state.velocity.z > 2.0) {
         // Limit backward movement
-        state.velocity.z = 1.5;
+        state.velocity.z = 2.0;
       }
     }
 

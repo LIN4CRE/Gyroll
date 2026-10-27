@@ -503,20 +503,20 @@ export class SceneManager {
       }
 
       // True 3D Third-Person Forward-Facing Chase Camera
-      const targetCamX = this.ballPhysics.position.x * 0.45;
-      const targetCamY = Math.max(1.8, this.ballPhysics.position.y + 3.4);
-      const targetCamZ = this.ballPhysics.position.z + 7.2;
+      const targetCamX = this.ballPhysics.position.x;
+      const targetCamY = Math.max(1.8, this.ballPhysics.position.y + 3.2);
+      const targetCamZ = this.ballPhysics.position.z + 7.5;
 
-      const camDamp = 1 - Math.exp(-14 * dt);
+      const camDamp = 1 - Math.exp(-15 * dt);
       this.camera.position.x += (targetCamX - this.camera.position.x) * camDamp;
       this.camera.position.y += (targetCamY - this.camera.position.y) * camDamp;
       this.camera.position.z += (targetCamZ - this.camera.position.z) * camDamp;
 
       // Dynamic Pitch Look-Ahead (avoids blind drops on ramps and leaps)
       const pitchAdjustment = Math.max(-2.5, Math.min(1.2, this.ballPhysics.velocity.y * 0.12));
-      const targetLookX = this.ballPhysics.position.x * 0.65;
+      const targetLookX = this.ballPhysics.position.x;
       const targetLookY = this.ballPhysics.position.y + 1.2 + pitchAdjustment;
-      const targetLookZ = this.ballPhysics.position.z - 8.5;
+      const targetLookZ = this.ballPhysics.position.z - 9.0;
 
       this._camLookTarget.x += (targetLookX - this._camLookTarget.x) * camDamp;
       this._camLookTarget.y += (targetLookY - this._camLookTarget.y) * camDamp;
