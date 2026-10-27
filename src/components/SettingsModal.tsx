@@ -1,8 +1,9 @@
 import React from 'react';
-import { X, Sliders, Volume2, Monitor, Compass } from 'lucide-react';
+import { X, Sliders, Volume2, Compass, Cpu, Vibrate } from 'lucide-react';
 import { UserProgress } from '../game/types';
 import { GyroSensorState } from '../game/input';
 import { sound } from '../game/audio';
+import { haptics } from '../game/haptics';
 
 interface SettingsModalProps {
   onClose: () => void;
@@ -30,11 +31,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       updated.engineVolume,
       updated.isMuted
     );
+    if (partial.enableHaptics !== undefined) {
+      haptics.setEnabled(partial.enableHaptics);
+    }
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 select-none">
-      <div className="relative w-full max-w-xl bg-slate-900 border border-slate-700 rounded-2xl p-6 shadow-2xl flex flex-col max-h-[90vh]">
+      <div className="relative w-full max-w-xl bg-slate-900 border border-slate-700 rounded-2xl p-6 shadow-2xl flex flex-col max-h-[92vh]">
         {/* Header */}
         <div className="flex items-center justify-between pb-4 border-b border-slate-800">
           <div className="flex items-center gap-2">
@@ -50,8 +54,38 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
 
         {/* Settings Body */}
-        <div className="space-y-5 my-4 overflow-y-auto pr-1 text-xs md:text-sm">
-          {/* Section 1: Tilt & Gyro Calibration */}
+        <div className="space-y-4 my-4 overflow-y-auto pr-1 text-xs md:text-sm">
+          {/* Section 1: Adaptive Difficulty System */}
+          <div className="p-4 rounded-xl bg-slate-800/80 border border-slate-700 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="font-bold text-white flex items-center gap-1.5">
+                <Cpu className="w-4 h-4 text-cyan-400" />
+                ADAPTIVE DIFFICULTY SYSTEM
+              </span>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={settings.enableAdaptiveDifficulty}
+                  onChange={(e) => update({ enableAdaptiveDifficulty: e.target.checked })}
+                  className="sr-only peer"
+                />
+                <div className="w-9 h-5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-500"></div>
+              </label>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Subtly tailors moving obstacle speeds and balance beam safe margins based on sustained player performance. When disabled, courses use default standard difficulty.
+            </p>
+            {settings.enableAdaptiveDifficulty && progress.adaptiveDifficulty && (
+              <div className="mt-2 flex items-center justify-between px-3 py-1.5 rounded-lg bg-slate-900/90 text-[11px] font-mono">
+                <span className="text-slate-400">Current AI Tuning:</span>
+                <span className="text-cyan-300 font-bold">
+                  {progress.adaptiveDifficulty.label} ({progress.adaptiveDifficulty.multiplier.toFixed(2)}x)
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* Section 2: Motion Sensor & Tilt */}
           <div className="p-4 rounded-xl bg-slate-800/80 border border-slate-700 space-y-3">
             <div className="flex items-center justify-between">
               <span className="font-bold text-white flex items-center gap-1.5">
@@ -141,7 +175,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </div>
 
-          {/* Section 2: Control Scheme */}
+          {/* Section 3: Control Scheme */}
           <div className="p-4 rounded-xl bg-slate-800/80 border border-slate-700 space-y-2">
             <span className="font-bold text-white block">INPUT METHOD</span>
             <div className="grid grid-cols-2 gap-2">
@@ -169,9 +203,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </div>
 
-          {/* Section 3: Audio Volumes */}
+          {/* Section 4: Haptics & Audio */}
           <div className="p-4 rounded-xl bg-slate-800/80 border border-slate-700 space-y-3">
             <div className="flex items-center justify-between">
+              <span className="font-bold text-white flex items-center gap-1.5">
+                <Vibrate className="w-4 h-4 text-cyan-400" />
+                HAPTIC FEEDBACK (MOBILE)
+              </span>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={settings.enableHaptics}
+                  onChange={(e) => update({ enableHaptics: e.target.checked })}
+                  className="w-4 h-4 accent-cyan-400"
+                />
+              </label>
+            </div>
+
+            <div className="flex items-center justify-between pt-2 border-t border-slate-700/60">
               <span className="font-bold text-white flex items-center gap-1.5">
                 <Volume2 className="w-4 h-4 text-cyan-400" />
                 AUDIO VOLUMES

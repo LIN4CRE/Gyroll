@@ -7,6 +7,7 @@ export const TRACKS: TrackDefinition[] = [
     difficulty: 'Easy',
     description: 'Brisk mountain ridge with gentle chicanes, balance bridge, and boost jump.',
     themeColor: '#38bdf8', // sky blue
+    weather: 'snow',
     targetTimes: {
       gold: 22.0,
       silver: 32.0,
@@ -192,6 +193,7 @@ export const TRACKS: TrackDefinition[] = [
     difficulty: 'Medium',
     description: 'Futuristic highway with oscillating platforms, slippery neon ice, and pendulum hammers.',
     themeColor: '#a855f7', // purple / neon violet
+    weather: 'rain',
     targetTimes: {
       gold: 32.0,
       silver: 46.0,
@@ -414,6 +416,7 @@ export const TRACKS: TrackDefinition[] = [
     difficulty: 'Hard',
     description: 'Master-level gauntlet featuring razor bridges, twin pendulum crushers, and supersonic boost leap.',
     themeColor: '#f97316', // molten orange / amber
+    weather: 'embers',
     targetTimes: {
       gold: 42.0,
       silver: 58.0,

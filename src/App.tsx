@@ -6,10 +6,18 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { SceneManager } from './game/sceneManager';
 import { TRACKS } from './game/tracks';
-import { BALL_SKINS, BALL_TRAILS, loadUserProgress, recordTrackCompletion, saveUserProgress } from './game/customization';
+import {
+  BALL_SKINS,
+  BALL_TRAILS,
+  loadUserProgress,
+  recordTrackCompletion,
+  saveUserProgress,
+} from './game/customization';
 import { inputManager } from './game/input';
 import { sound } from './game/audio';
-import { BallSkin, BallTrail, TrackDefinition, UserProgress } from './game/types';
+import { haptics } from './game/haptics';
+import { recordAdaptiveRun } from './game/adaptiveDifficulty';
+import { BallSkin, BallTrail, TrackDefinition, TrailCustomConfig, UserProgress } from './game/types';
 import { TitleScreen } from './components/TitleScreen';
 import { GameHUD } from './components/GameHUD';
 import { LevelSelectModal } from './components/LevelSelectModal';
@@ -26,7 +34,9 @@ export default function App() {
 
   // App State
   const [gameState, setGameState] = useState<'title' | 'playing' | 'paused' | 'gameover'>('title');
-  const [activeModal, setActiveModal] = useState<'none' | 'level_select' | 'customization' | 'settings' | 'how_to_play'>('none');
+  const [activeModal, setActiveModal] = useState<
+    'none' | 'level_select' | 'customization' | 'settings' | 'how_to_play'
+  >('none');
 
   // Progression & Selection
   const [progress, setProgress] = useState<UserProgress>(loadUserProgress);
@@ -52,11 +62,11 @@ export default function App() {
     stars: number;
     earnedCoins: number;
     isNewBest: boolean;
+    rank: number;
   } | null>(null);
 
   // Initialize Input Manager & Three.js Scene
   useEffect(() => {
-    // Mount global input reference for high-speed simulation loop
     (window as any).__gyroRollInput = inputManager;
     inputManager.init();
     inputManager.setConfiguration({
@@ -68,20 +78,26 @@ export default function App() {
       neutralBeta: progress.settings.neutralBeta,
     });
 
+    haptics.setEnabled(progress.settings.enableHaptics);
+
     if (!canvasContainerRef.current) return;
 
     const currentSkin = BALL_SKINS.find((s) => s.id === progress.selectedSkinId) || BALL_SKINS[0];
-    const currentTrail = BALL_TRAILS.find((t) => t.id === progress.selectedTrailId) || BALL_TRAILS[0];
+    const currentTrail = BALL_TRAILS.find((t) => t.id === progress.selectedTrailId) || BALL_TRAILS[1];
+    const currentTrailConfig = progress.trailConfigs[currentTrail.id] || currentTrail.defaultConfig;
+    const adaptiveState = progress.settings.enableAdaptiveDifficulty
+      ? progress.adaptiveDifficulty
+      : null;
 
     const manager = new SceneManager(
       canvasContainerRef.current,
       selectedTrack,
       currentSkin,
       currentTrail,
+      currentTrailConfig,
+      adaptiveState,
       {
-        onCheckpoint: (index, name) => {
-          // Checkpoint reached
-        },
+        onCheckpoint: () => {},
         onFinish: (clearTime, falls) => {
           const starRes = calculateStars(clearTime, falls, selectedTrack.targetTimes);
           const completion = recordTrackCompletion(
@@ -93,22 +109,62 @@ export default function App() {
             selectedTrack.rewardCoins
           );
 
+          // Adaptive Difficulty Evaluation
+          const adaptiveRes = recordAdaptiveRun(completion.progress.adaptiveDifficulty, {
+            trackId: selectedTrack.id,
+            completed: true,
+            clearTime,
+            targetTime: selectedTrack.targetTimes.gold,
+            falls,
+            restarts: 0,
+          });
+
           const prevRecord = progress.trackRecords[selectedTrack.id];
           const isNewBest = !prevRecord?.bestTime || clearTime < prevRecord.bestTime;
+          const userRank = (completion.progress.leaderboards[selectedTrack.id] || []).findIndex(
+            (e) => e.time === Number(clearTime.toFixed(2))
+          ) + 1;
 
-          setProgress(completion.progress);
+          const finalProgress: UserProgress = {
+            ...completion.progress,
+            adaptiveDifficulty: adaptiveRes.state,
+          };
+
+          setProgress(finalProgress);
+          saveUserProgress(finalProgress);
+
           setVictoryData({
             time: clearTime,
             falls,
             stars: starRes.stars,
             earnedCoins: completion.earnedCoins,
             isNewBest,
+            rank: userRank > 0 ? userRank : 1,
           });
           setGameState('gameover');
           document.body.dataset.state = 'gameover';
         },
         onFall: (falls) => {
-          // Handled in hud stats
+          if (falls >= 4 && progress.settings.enableAdaptiveDifficulty) {
+            const adaptiveRes = recordAdaptiveRun(progress.adaptiveDifficulty, {
+              trackId: selectedTrack.id,
+              completed: false,
+              targetTime: selectedTrack.targetTimes.gold,
+              falls,
+              restarts: 0,
+            });
+            if (adaptiveRes.changed) {
+              const updatedProgress = {
+                ...progress,
+                adaptiveDifficulty: adaptiveRes.state,
+              };
+              setProgress(updatedProgress);
+              saveUserProgress(updatedProgress);
+              if (sceneManagerRef.current) {
+                sceneManagerRef.current.setAdaptiveState(adaptiveRes.state);
+              }
+            }
+          }
         },
         onHudUpdate: (stats) => {
           setHudStats(stats);
@@ -129,7 +185,6 @@ export default function App() {
       document.body.dataset.state = 'title';
     }
 
-    // Sensor poll interval for HUD display
     const sensorInterval = setInterval(() => {
       setSensorState(inputManager.getSensorState());
     }, 100);
@@ -157,9 +212,16 @@ export default function App() {
       progress.settings.engineVolume,
       progress.settings.isMuted
     );
+    haptics.setEnabled(progress.settings.enableHaptics);
+
+    if (sceneManagerRef.current) {
+      sceneManagerRef.current.setAdaptiveState(
+        progress.settings.enableAdaptiveDifficulty ? progress.adaptiveDifficulty : null
+      );
+    }
   }, [progress.settings]);
 
-  // Global Keyboard shortcuts (Escape, M, R, Enter/Space for start)
+  // Global Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (gameState === 'title' && (e.code === 'Enter' || e.code === 'Space')) {
@@ -188,7 +250,10 @@ export default function App() {
     sound.ensureRunning();
     sound.playClick();
     if (sceneManagerRef.current) {
-      sceneManagerRef.current.loadTrack(selectedTrack);
+      sceneManagerRef.current.loadTrack(
+        selectedTrack,
+        progress.settings.enableAdaptiveDifficulty ? progress.adaptiveDifficulty : null
+      );
       sceneManagerRef.current.setMode('playing');
     }
     setGameState('playing');
@@ -236,7 +301,10 @@ export default function App() {
     sound.playClick();
     setSelectedTrack(track);
     if (sceneManagerRef.current) {
-      sceneManagerRef.current.loadTrack(track);
+      sceneManagerRef.current.loadTrack(
+        track,
+        progress.settings.enableAdaptiveDifficulty ? progress.adaptiveDifficulty : null
+      );
     }
     setActiveModal('none');
     handleStartGame();
@@ -249,7 +317,10 @@ export default function App() {
     const nextTrack = TRACKS[nextIdx];
     setSelectedTrack(nextTrack);
     if (sceneManagerRef.current) {
-      sceneManagerRef.current.loadTrack(nextTrack);
+      sceneManagerRef.current.loadTrack(
+        nextTrack,
+        progress.settings.enableAdaptiveDifficulty ? progress.adaptiveDifficulty : null
+      );
     }
     setGameState('playing');
     document.body.dataset.state = 'playing';
@@ -296,9 +367,10 @@ export default function App() {
     }
   };
 
-  const handlePreviewTrail = (trail: BallTrail) => {
+  const handlePreviewTrail = (trail: BallTrail, config?: TrailCustomConfig) => {
     if (sceneManagerRef.current) {
-      sceneManagerRef.current.updateTrail(trail);
+      const activeConfig = config || progress.trailConfigs[trail.id] || trail.defaultConfig;
+      sceneManagerRef.current.updateTrail(trail, activeConfig);
     }
   };
 
@@ -377,7 +449,7 @@ export default function App() {
         />
       )}
 
-      {/* 5. Victory Modal */}
+      {/* 5. Victory Modal with Fireworks & Leaderboard Position */}
       {gameState === 'gameover' && victoryData && (
         <VictoryModal
           track={selectedTrack}
@@ -386,6 +458,10 @@ export default function App() {
           stars={victoryData.stars}
           earnedCoins={victoryData.earnedCoins}
           isNewBest={victoryData.isNewBest}
+          rank={victoryData.rank}
+          difficultyLabel={
+            progress.settings.enableAdaptiveDifficulty ? progress.adaptiveDifficulty.label : undefined
+          }
           onReplay={handleRestart}
           onNextTrack={handleNextTrack}
           onLevelSelect={() => {
@@ -396,7 +472,7 @@ export default function App() {
         />
       )}
 
-      {/* 6. Level Select Modal */}
+      {/* 6. Level Select Modal with Top 10 Times */}
       {activeModal === 'level_select' && (
         <LevelSelectModal
           onClose={() => setActiveModal('none')}
@@ -405,7 +481,7 @@ export default function App() {
         />
       )}
 
-      {/* 7. Ball Garage / Customization Modal */}
+      {/* 7. Ball Garage / Customization Modal with Trail Tuning */}
       {activeModal === 'customization' && (
         <CustomizationModal
           onClose={() => {
@@ -423,7 +499,7 @@ export default function App() {
         />
       )}
 
-      {/* 8. Settings Modal */}
+      {/* 8. Settings Modal with Adaptive Difficulty & Haptics */}
       {activeModal === 'settings' && (
         <SettingsModal
           onClose={() => {

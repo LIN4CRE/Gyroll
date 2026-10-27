@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { BallSkin, BallTrail, Vector3D } from './types';
+import { BallSkin, BallTrail, TrailCustomConfig, Vector3D } from './types';
 import { createBallTexture } from './textures';
 
 export interface BallVisualInstance {
@@ -15,17 +15,19 @@ export interface BallVisualInstance {
     speed: number
   ) => void;
   updateSkin: (skin: BallSkin) => void;
-  updateTrail: (trail: BallTrail) => void;
+  updateTrail: (trail: BallTrail, config?: TrailCustomConfig) => void;
   emitBurst: (position: Vector3D, count?: number) => void;
+  clearParticles: () => void;
   dispose: () => void;
 }
 
-const MAX_PARTICLES = 64;
+const MAX_PARTICLES = 96;
 
 export function createBallVisual(
   initialSkin: BallSkin,
   initialTrail: BallTrail,
-  radius = 0.5
+  radius = 0.5,
+  initialConfig?: TrailCustomConfig
 ): BallVisualInstance {
   const group = new THREE.Group();
 
@@ -69,37 +71,94 @@ export function createBallVisual(
   shadowMesh.rotation.x = -Math.PI / 2;
   group.add(shadowMesh);
 
-  // 4. Zero-GC Pooled Particle Trail (InstancedMesh)
-  const particleGeo = new THREE.SphereGeometry(0.08, 6, 6);
+  // 4. Premium Pooled Particle Trail (InstancedMesh)
+  let currentTrail = initialTrail;
+  let currentConfig: TrailCustomConfig = initialConfig || initialTrail.defaultConfig;
+
+  // Use a dual-geometry approach or box for digital, sphere/octahedron for others
+  const particleGeo = new THREE.DodecahedronGeometry(0.08, 0);
   const particleMat = new THREE.MeshBasicMaterial({
-    color: new THREE.Color(initialTrail.particleColor),
+    color: new THREE.Color(currentConfig.primaryColor),
     transparent: true,
-    opacity: 0.8,
+    opacity: Math.min(1.0, 0.85 * currentConfig.glowIntensity),
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
   });
+
   const particleMesh = new THREE.InstancedMesh(particleGeo, particleMat, MAX_PARTICLES);
   particleMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   group.add(particleMesh);
+
+  // Color attribute per instance for dual-tone & prismatic ribbons
+  const colorBuffer = new Float32Array(MAX_PARTICLES * 3);
+  const baseColor = new THREE.Color(currentConfig.primaryColor);
+  for (let i = 0; i < MAX_PARTICLES; i++) {
+    colorBuffer[i * 3] = baseColor.r;
+    colorBuffer[i * 3 + 1] = baseColor.g;
+    colorBuffer[i * 3 + 2] = baseColor.b;
+  }
+  const colorAttribute = new THREE.InstancedBufferAttribute(colorBuffer, 3);
+  particleGeo.setAttribute('color', colorAttribute);
+  particleMat.vertexColors = true;
 
   // Particle pool state arrays
   const particlePositions = new Float32Array(MAX_PARTICLES * 3);
   const particleVelocities = new Float32Array(MAX_PARTICLES * 3);
   const particleLifespans = new Float32Array(MAX_PARTICLES);
   const particleMaxLifespans = new Float32Array(MAX_PARTICLES);
+  const particleRotations = new Float32Array(MAX_PARTICLES);
   let nextParticleIdx = 0;
   let trailSpawnTimer = 0;
+  let globalTime = 0;
 
   const dummyMatrix = new THREE.Matrix4();
   const dummyScale = new THREE.Vector3();
   const dummyPos = new THREE.Vector3();
+  const dummyRot = new THREE.Quaternion();
+  const tempColor = new THREE.Color();
+  const primaryCol = new THREE.Color(currentConfig.primaryColor);
+  const secondaryCol = new THREE.Color(currentConfig.secondaryColor);
 
-  // Initialize particles offscreen
+  // Hide all instances initially
   for (let i = 0; i < MAX_PARTICLES; i++) {
     dummyMatrix.makeScale(0, 0, 0);
     particleMesh.setMatrixAt(i, dummyMatrix);
   }
   particleMesh.instanceMatrix.needsUpdate = true;
 
-  function spawnParticle(x: number, y: number, z: number, vx = 0, vy = 0, vz = 0, life = 0.5) {
+  function getLifespanFromLength(length: 'short' | 'medium' | 'long'): number {
+    switch (length) {
+      case 'short':
+        return 0.25;
+      case 'long':
+        return 0.75;
+      default:
+        return 0.45;
+    }
+  }
+
+  function getSpawnIntervalFromDensity(density: 'low' | 'medium' | 'high'): number {
+    switch (density) {
+      case 'low':
+        return 0.055;
+      case 'high':
+        return 0.02;
+      default:
+        return 0.035;
+    }
+  }
+
+  function spawnParticle(
+    x: number,
+    y: number,
+    z: number,
+    vx = 0,
+    vy = 0,
+    vz = 0,
+    life = 0.5,
+    rot = 0,
+    col = primaryCol
+  ) {
     const idx = nextParticleIdx;
     nextParticleIdx = (nextParticleIdx + 1) % MAX_PARTICLES;
 
@@ -113,22 +172,40 @@ export function createBallVisual(
 
     particleLifespans[idx] = life;
     particleMaxLifespans[idx] = life;
+    particleRotations[idx] = rot;
+
+    colorBuffer[idx * 3] = col.r;
+    colorBuffer[idx * 3 + 1] = col.g;
+    colorBuffer[idx * 3 + 2] = col.b;
+    colorAttribute.needsUpdate = true;
   }
 
-  function emitBurst(pos: Vector3D, count = 12) {
+  function emitBurst(pos: Vector3D, count = 16) {
+    const burstColor = currentTrail.particleType === 'void' ? secondaryCol : primaryCol;
     for (let i = 0; i < count; i++) {
       const angle = Math.random() * Math.PI * 2;
-      const speed = 2 + Math.random() * 4;
+      const speed = 2.5 + Math.random() * 4.5;
       spawnParticle(
         pos.x,
         pos.y,
         pos.z,
         Math.cos(angle) * speed,
-        1.5 + Math.random() * 3,
+        1.5 + Math.random() * 3.5,
         Math.sin(angle) * speed,
-        0.35 + Math.random() * 0.3
+        0.4 + Math.random() * 0.3,
+        Math.random() * Math.PI,
+        burstColor
       );
     }
+  }
+
+  function clearParticles() {
+    for (let i = 0; i < MAX_PARTICLES; i++) {
+      particleLifespans[i] = 0;
+      dummyMatrix.makeScale(0, 0, 0);
+      particleMesh.setMatrixAt(i, dummyMatrix);
+    }
+    particleMesh.instanceMatrix.needsUpdate = true;
   }
 
   return {
@@ -136,15 +213,16 @@ export function createBallVisual(
     ballMesh,
     shadowMesh,
     update: (pos, rot, groundY, onGround, dt, speed) => {
+      globalTime += dt;
+
       // Position ball
       ballMesh.position.set(pos.x, pos.y, pos.z);
       ballMesh.rotation.copy(rot);
 
-      // Position contact shadow directly beneath on ground surface
-      if (onGround && pos.y >= groundY - 0.2) {
+      // Contact shadow positioning
+      if (onGround && pos.y >= groundY - 0.25) {
         shadowMesh.visible = true;
         shadowMesh.position.set(pos.x, groundY + 0.02, pos.z);
-        // Fade shadow with height if slightly airborne
         const heightAboveGround = Math.max(0, pos.y - (groundY + radius));
         shadowMat.opacity = Math.max(0, 0.45 - heightAboveGround * 0.2);
         const scale = 1 + heightAboveGround * 0.3;
@@ -153,23 +231,147 @@ export function createBallVisual(
         shadowMesh.visible = false;
       }
 
-      // Update particle trails
+      // Trail Spawning based on type and movement speed
       trailSpawnTimer += dt;
-      if (initialTrail.particleType !== 'none' && trailSpawnTimer > 0.04 && speed > 1.5) {
+      const spawnInterval = getSpawnIntervalFromDensity(currentConfig.density);
+      const baseLifespan = getLifespanFromLength(currentConfig.length);
+
+      if (currentTrail.particleType !== 'none' && trailSpawnTimer >= spawnInterval && speed > 1.2) {
         trailSpawnTimer = 0;
-        spawnParticle(
-          pos.x + (Math.random() - 0.5) * 0.2,
-          pos.y + (Math.random() - 0.5) * 0.2,
-          pos.z + radius * 0.8,
-          (Math.random() - 0.5) * 0.5,
-          Math.random() * 0.8,
-          1.0 + Math.random() * 1.5,
-          0.45
-        );
+        const trailType = currentTrail.particleType;
+
+        if (trailType === 'classic') {
+          // Subtle aerodynamic stream
+          spawnParticle(
+            pos.x + (Math.random() - 0.5) * 0.15,
+            pos.y,
+            pos.z + radius * 0.8,
+            (Math.random() - 0.5) * 0.4,
+            0.2,
+            1.2 + Math.random() * 1.5,
+            baseLifespan,
+            0,
+            primaryCol
+          );
+        } else if (trailType === 'neon') {
+          // Dual-channel weaving light ribbons
+          const weave = Math.sin(globalTime * 12) * 0.28;
+          spawnParticle(
+            pos.x + weave,
+            pos.y + 0.05,
+            pos.z + radius * 0.85,
+            weave * 1.5,
+            0.3,
+            1.8,
+            baseLifespan,
+            0,
+            primaryCol
+          );
+          spawnParticle(
+            pos.x - weave,
+            pos.y - 0.05,
+            pos.z + radius * 0.85,
+            -weave * 1.5,
+            0.3,
+            1.8,
+            baseLifespan,
+            0,
+            secondaryCol
+          );
+        } else if (trailType === 'plasma') {
+          // Expanding pulsating plasma rings
+          spawnParticle(
+            pos.x,
+            pos.y,
+            pos.z + radius * 0.7,
+            (Math.random() - 0.5) * 0.8,
+            (Math.random() - 0.5) * 0.8,
+            1.0,
+            baseLifespan * 1.1,
+            globalTime * 3,
+            Math.random() > 0.5 ? primaryCol : secondaryCol
+          );
+        } else if (trailType === 'digital') {
+          // Binary pixel cubes aligned to grid
+          const snapX = Math.round((pos.x + (Math.random() - 0.5) * 0.4) * 8) / 8;
+          const snapY = Math.round((pos.y + (Math.random() - 0.5) * 0.3) * 8) / 8;
+          spawnParticle(
+            snapX,
+            snapY,
+            pos.z + radius * 0.8,
+            0,
+            0.2,
+            0.5,
+            baseLifespan,
+            0,
+            Math.random() > 0.3 ? primaryCol : secondaryCol
+          );
+        } else if (trailType === 'electric') {
+          // High-frequency zigzag electric sparks
+          for (let k = 0; k < 2; k++) {
+            const jitterX = (Math.random() - 0.5) * 0.5;
+            const jitterY = (Math.random() - 0.5) * 0.5;
+            spawnParticle(
+              pos.x + jitterX,
+              pos.y + jitterY,
+              pos.z + radius * 0.6,
+              jitterX * 4,
+              jitterY * 4,
+              1.5,
+              baseLifespan * 0.7,
+              Math.random() * Math.PI,
+              Math.random() > 0.4 ? primaryCol : secondaryCol
+            );
+          }
+        } else if (trailType === 'cosmic') {
+          // Twinkling diamond stardust
+          spawnParticle(
+            pos.x + (Math.random() - 0.5) * 0.35,
+            pos.y + (Math.random() - 0.5) * 0.35,
+            pos.z + radius * 0.9,
+            (Math.random() - 0.5) * 0.3,
+            0.4 + Math.random() * 0.4,
+            0.8,
+            baseLifespan * 1.3,
+            globalTime * 4,
+            Math.random() > 0.5 ? primaryCol : secondaryCol
+          );
+        } else if (trailType === 'prismatic') {
+          // Shifting rainbow gradient
+          const hue = (globalTime * 1.2) % 1.0;
+          tempColor.setHSL(hue, 0.9, 0.55);
+          spawnParticle(
+            pos.x + (Math.random() - 0.5) * 0.2,
+            pos.y,
+            pos.z + radius * 0.8,
+            (Math.random() - 0.5) * 0.5,
+            0.3,
+            1.5,
+            baseLifespan,
+            0,
+            tempColor
+          );
+        } else if (trailType === 'void') {
+          // Dark matter core with amethyst fringe
+          const isCore = Math.random() > 0.4;
+          spawnParticle(
+            pos.x + (Math.random() - 0.5) * 0.25,
+            pos.y + (Math.random() - 0.5) * 0.25,
+            pos.z + radius * 0.75,
+            (Math.random() - 0.5) * 0.4,
+            (Math.random() - 0.5) * 0.4,
+            0.8,
+            baseLifespan,
+            0,
+            isCore ? primaryCol : secondaryCol
+          );
+        }
       }
 
       // Tick active particles
       let hasAliveParticles = false;
+      const baseScale = currentConfig.particleSize;
+
       for (let i = 0; i < MAX_PARTICLES; i++) {
         if (particleLifespans[i] > 0) {
           hasAliveParticles = true;
@@ -180,7 +382,16 @@ export function createBallVisual(
           particlePositions[i * 3 + 2] += particleVelocities[i * 3 + 2] * dt;
 
           const lifeRatio = Math.max(0, particleLifespans[i] / particleMaxLifespans[i]);
-          const currentScale = lifeRatio * 1.0;
+          let currentScale = lifeRatio * baseScale * 12;
+
+          // Trail-specific scale curves
+          if (currentTrail.particleType === 'plasma') {
+            // Expands then fades
+            currentScale = (1.0 - lifeRatio * 0.5) * baseScale * 14;
+          } else if (currentTrail.particleType === 'electric') {
+            // Rapid flickers
+            currentScale *= Math.random() > 0.2 ? 1.0 : 0.4;
+          }
 
           dummyPos.set(
             particlePositions[i * 3],
@@ -188,8 +399,11 @@ export function createBallVisual(
             particlePositions[i * 3 + 2]
           );
           dummyScale.set(currentScale, currentScale, currentScale);
-          dummyMatrix.makeTranslation(dummyPos.x, dummyPos.y, dummyPos.z);
+          dummyRot.setFromAxisAngle(THREE.Object3D.DEFAULT_UP, particleRotations[i]);
+
+          dummyMatrix.makeRotationFromQuaternion(dummyRot);
           dummyMatrix.scale(dummyScale);
+          dummyMatrix.setPosition(dummyPos);
           particleMesh.setMatrixAt(i, dummyMatrix);
         } else {
           dummyMatrix.makeScale(0, 0, 0);
@@ -211,12 +425,16 @@ export function createBallVisual(
       ballMat.emissive.set(skin.emissive);
       ballMat.needsUpdate = true;
     },
-    updateTrail: (trail) => {
-      initialTrail = trail;
-      particleMat.color.set(trail.particleColor);
+    updateTrail: (trail, config) => {
+      currentTrail = trail;
+      currentConfig = config || trail.defaultConfig;
+      primaryCol.set(currentConfig.primaryColor);
+      secondaryCol.set(currentConfig.secondaryColor);
+      particleMat.opacity = Math.min(1.0, 0.85 * currentConfig.glowIntensity);
       particleMat.needsUpdate = true;
     },
     emitBurst,
+    clearParticles,
     dispose: () => {
       activeTexture.dispose();
       sphereGeo.dispose();

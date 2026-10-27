@@ -1,18 +1,23 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import {
+  AdaptiveDifficultyState,
   BallPhysicsState,
   BallSkin,
   BallTrail,
   CollisionEvent,
   PlayerInput,
   TrackDefinition,
+  TrailCustomConfig,
   Vector3D,
 } from './types';
 import { createInitialBallState, getGroundAt, stepPhysics } from './physics';
 import { buildTrack3D, BuiltTrack } from './trackBuilder';
 import { createBallVisual, BallVisualInstance } from './ballVisual';
 import { sound } from './audio';
+import { haptics } from './haptics';
+import { createWeatherSystem, WeatherSystem } from './weather';
+import { applyAdaptiveTrackModifications } from './adaptiveDifficulty';
 
 export type GameSceneMode = 'title' | 'playing' | 'paused' | 'gameover' | 'customization';
 
@@ -45,6 +50,8 @@ export class SceneManager {
   private builtTrack: BuiltTrack | null = null;
   private ballVisual: BallVisualInstance | null = null;
   private ballPhysics: BallPhysicsState;
+  private weatherSystem: WeatherSystem | null = null;
+  private adaptiveState: AdaptiveDifficultyState | null = null;
 
   private mode: GameSceneMode = 'title';
   private callbacks: SceneManagerCallbacks;
@@ -67,10 +74,13 @@ export class SceneManager {
     track: TrackDefinition,
     skin: BallSkin,
     trail: BallTrail,
+    trailConfig: TrailCustomConfig | undefined,
+    adaptiveState: AdaptiveDifficultyState | null,
     callbacks: SceneManagerCallbacks
   ) {
     this.container = container;
     this.currentTrack = track;
+    this.adaptiveState = adaptiveState;
     this.callbacks = callbacks;
 
     // 1. Detect Software WebGL
@@ -119,7 +129,6 @@ export class SceneManager {
     this.scene.environment = this.pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
 
     // 5. Studio Lighting Rig
-    // Warm Key Light with tight shadow frustum
     const dirLight = new THREE.DirectionalLight(0xffedd5, 2.2);
     dirLight.position.set(25, 45, 20);
     dirLight.castShadow = !this.isSoftwareGl;
@@ -136,22 +145,18 @@ export class SceneManager {
     }
     this.scene.add(dirLight);
 
-    // Cool Sky / Ground Fill
     const hemiLight = new THREE.HemisphereLight(0x38bdf8, 0x1e293b, 1.2);
     this.scene.add(hemiLight);
 
-    // 6. Setup Initial Track & Ball
+    // 6. Setup Initial Track, Ball & Weather
     this.ballPhysics = createInitialBallState(track.spawnPoint);
-    this.loadTrack(track);
-    this.setupBallVisual(skin, trail);
+    this.loadTrack(track, adaptiveState);
+    this.setupBallVisual(skin, trail, trailConfig);
 
     // 7. Initial Camera Placement
     this.setupInitialCamera();
 
-    // Resize listener
     window.addEventListener('resize', this.onResize);
-
-    // Start loop
     this.startLoop();
   }
 
@@ -171,14 +176,41 @@ export class SceneManager {
     }
   }
 
-  public loadTrack(track: TrackDefinition) {
+  public setAdaptiveState(adaptiveState: AdaptiveDifficultyState | null) {
+    this.adaptiveState = adaptiveState;
+    this.loadTrack(this.currentTrack, adaptiveState);
+  }
+
+  public loadTrack(track: TrackDefinition, adaptiveState: AdaptiveDifficultyState | null = this.adaptiveState) {
     if (this.builtTrack) {
       this.scene.remove(this.builtTrack.group);
       this.builtTrack.dispose();
     }
+
+    if (this.weatherSystem) {
+      this.scene.remove(this.weatherSystem.points);
+      this.weatherSystem.dispose();
+      this.weatherSystem = null;
+    }
+
     this.currentTrack = track;
-    this.builtTrack = buildTrack3D(track);
+    this.adaptiveState = adaptiveState;
+
+    // Apply adaptive difficulty modifications if enabled
+    const activeTrackDef = adaptiveState
+      ? applyAdaptiveTrackModifications(track, adaptiveState)
+      : track;
+
+    this.builtTrack = buildTrack3D(activeTrackDef);
     this.scene.add(this.builtTrack.group);
+
+    // Dynamic Weather Particles
+    if (track.weather && track.weather !== 'none') {
+      this.weatherSystem = createWeatherSystem(track.weather);
+      if (this.weatherSystem) {
+        this.scene.add(this.weatherSystem.points);
+      }
+    }
 
     // Reset physics state
     this.ballPhysics = createInitialBallState(track.spawnPoint);
@@ -186,12 +218,12 @@ export class SceneManager {
     this.trackElapsedTime = 0;
   }
 
-  public setupBallVisual(skin: BallSkin, trail: BallTrail) {
+  public setupBallVisual(skin: BallSkin, trail: BallTrail, config?: TrailCustomConfig) {
     if (this.ballVisual) {
       this.scene.remove(this.ballVisual.group);
       this.ballVisual.dispose();
     }
-    this.ballVisual = createBallVisual(skin, trail, this.ballPhysics.radius);
+    this.ballVisual = createBallVisual(skin, trail, this.ballPhysics.radius, config);
     this.scene.add(this.ballVisual.group);
   }
 
@@ -201,20 +233,22 @@ export class SceneManager {
     }
   }
 
-  public updateTrail(trail: BallTrail) {
+  public updateTrail(trail: BallTrail, config?: TrailCustomConfig) {
     if (this.ballVisual) {
-      this.ballVisual.updateTrail(trail);
+      this.ballVisual.updateTrail(trail, config);
     }
   }
 
   public restartCurrentTrack() {
     this.ballPhysics = createInitialBallState(this.currentTrack.spawnPoint);
     this.runTimer = 0;
+    if (this.ballVisual) {
+      this.ballVisual.clearParticles();
+    }
     this.setMode('playing');
   }
 
   private setupInitialCamera() {
-    // Title / Initial forward view looking down track
     this.camera.position.set(0, 3.5, 9.0);
     this.camera.lookAt(0, 1.2, -6.0);
   }
@@ -268,6 +302,11 @@ export class SceneManager {
   private update(dt: number) {
     this.trackElapsedTime += dt;
 
+    // Update dynamic weather particles
+    if (this.weatherSystem) {
+      this.weatherSystem.update(this.ballPhysics.position, dt, this.trackElapsedTime);
+    }
+
     // Animate moving obstacles
     if (this.builtTrack) {
       for (const item of this.builtTrack.animatedObstacles) {
@@ -289,21 +328,18 @@ export class SceneManager {
         }
       }
 
-      // Checkpoint rings gentle rotation
       for (const cp of this.builtTrack.checkpointMeshes) {
         cp.ringMesh.rotation.z += dt * 0.8;
       }
     }
 
     if (this.mode === 'title') {
-      // Live title camera flyover
       this.demoAngle += dt * 0.25;
       const camX = Math.sin(this.demoAngle) * 4.5;
       const camZ = 12 + Math.cos(this.demoAngle) * 3;
       this.camera.position.set(camX, 3.8, camZ);
       this.camera.lookAt(0, 1.0, -10.0);
 
-      // Idle ball spin at spawn
       if (this.ballVisual) {
         this._ballEuler.x += dt * 1.5;
         this.ballVisual.update(
@@ -319,7 +355,6 @@ export class SceneManager {
     }
 
     if (this.mode === 'customization') {
-      // Turntable preview camera focusing on ball
       this.demoAngle += dt * 0.8;
       const radius = 2.4;
       const camX = Math.sin(this.demoAngle) * radius;
@@ -344,7 +379,6 @@ export class SceneManager {
     if (this.mode === 'playing') {
       this.runTimer += dt;
 
-      // 1. Poll Player Input
       const input = (window as any).__gyroRollInput
         ? (window as any).__gyroRollInput.pollInput(dt)
         : { steer: 0, throttle: 0, brake: false, resetRequested: false };
@@ -354,7 +388,7 @@ export class SceneManager {
         this.ballPhysics.recoveryTimer = 0.2;
       }
 
-      // 2. Step Physics
+      // Step Physics
       const physResult = stepPhysics(
         this.ballPhysics,
         input,
@@ -364,10 +398,11 @@ export class SceneManager {
       );
       this.ballPhysics = physResult.state;
 
-      // 3. Handle Events
+      // Handle Events with Audio + Haptic Feedback
       for (const ev of physResult.events) {
         if (ev.type === 'checkpoint') {
           sound.playCheckpoint();
+          haptics.checkpoint();
           if (this.ballVisual) this.ballVisual.emitBurst(ev.position, 16);
           const cpObs = this.currentTrack.obstacles.find(
             (o) => o.id === ev.obstacleId
@@ -376,31 +411,32 @@ export class SceneManager {
           this.callbacks.onCheckpoint(this.ballPhysics.lastCheckpointIndex, name);
         } else if (ev.type === 'finish') {
           sound.playFinish();
+          haptics.finish();
           if (this.ballVisual) this.ballVisual.emitBurst(ev.position, 30);
           this.setMode('gameover');
           this.callbacks.onFinish(this.runTimer, this.ballPhysics.fallsCount);
           return;
         } else if (ev.type === 'fall') {
           sound.playFall();
+          haptics.fall();
           this.cameraRotationShake = 0.8;
           this.callbacks.onFall(this.ballPhysics.fallsCount);
         } else if (ev.type === 'obstacle') {
           sound.playObstacleHit(ev.intensity);
+          haptics.obstacleHit(ev.intensity);
           this.cameraRotationShake = Math.max(this.cameraRotationShake, 0.5);
           if (this.ballVisual) this.ballVisual.emitBurst(ev.position, 8);
         } else if (ev.type === 'boost') {
           sound.playBoost();
+          haptics.boost();
         } else if (ev.type === 'bounce') {
           sound.playBounce();
         }
       }
 
-      // 4. Update Audio Rumble
       const speed = Math.hypot(this.ballPhysics.velocity.x, this.ballPhysics.velocity.z);
       sound.updateRollingRumble(speed, this.ballPhysics.onGround);
 
-      // 5. Update Ball Visuals & Physical Rotation
-      // Rolling integration: integrate angular velocity into euler
       this._ballEuler.x += this.ballPhysics.angularVelocity.x * dt;
       this._ballEuler.z += this.ballPhysics.angularVelocity.z * dt;
 
@@ -422,21 +458,16 @@ export class SceneManager {
         );
       }
 
-      // 6. True 3D Third-Person Forward-Facing Chase Camera
-      // Camera is behind and above the ball looking forwards into the distance!
-      // Forward direction along track is -Z
+      // True 3D Third-Person Forward-Facing Chase Camera
       const targetCamX = this.ballPhysics.position.x * 0.45;
       const targetCamY = Math.max(1.8, this.ballPhysics.position.y + 3.4);
       const targetCamZ = this.ballPhysics.position.z + 7.2;
 
-      // Exponential damping for smooth camera following without motion sickness
       const camDamp = 1 - Math.exp(-14 * dt);
       this.camera.position.x += (targetCamX - this.camera.position.x) * camDamp;
       this.camera.position.y += (targetCamY - this.camera.position.y) * camDamp;
       this.camera.position.z += (targetCamZ - this.camera.position.z) * camDamp;
 
-      // Camera look target is ahead of the ball along -Z
-      // Ball is in the lower-middle, upcoming track in upper portion of screen!
       const targetLookX = this.ballPhysics.position.x * 0.65;
       const targetLookY = this.ballPhysics.position.y + 1.2;
       const targetLookZ = this.ballPhysics.position.z - 8.5;
@@ -447,14 +478,12 @@ export class SceneManager {
 
       this.camera.lookAt(this._camLookTarget);
 
-      // Screen impact shake
       if (this.cameraRotationShake > 0.01) {
         this.camera.position.x += (Math.random() - 0.5) * this.cameraRotationShake * 0.3;
         this.camera.position.y += (Math.random() - 0.5) * this.cameraRotationShake * 0.3;
         this.cameraRotationShake = Math.max(0, this.cameraRotationShake - dt * 3.0);
       }
 
-      // 7. Push HUD stats
       const totalCheckpoints = this.currentTrack.obstacles.filter(
         (o) => o.type === 'checkpoint'
       ).length;
@@ -478,6 +507,9 @@ export class SceneManager {
     }
     window.removeEventListener('resize', this.onResize);
 
+    if (this.weatherSystem) {
+      this.weatherSystem.dispose();
+    }
     if (this.builtTrack) {
       this.builtTrack.dispose();
     }

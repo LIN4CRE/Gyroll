@@ -1,5 +1,6 @@
 import {
   BallPhysicsState,
+  CollisionEvent,
   Obstacle,
   PlayerInput,
   TrackDefinition,
@@ -33,13 +34,6 @@ export function createInitialBallState(spawnPoint: Vector3D): BallPhysicsState {
     isRecovering: false,
     recoveryTimer: 0,
   };
-}
-
-export interface CollisionEvent {
-  type: 'obstacle' | 'checkpoint' | 'finish' | 'bounce' | 'boost' | 'fall';
-  position: Vector3D;
-  obstacleId?: string;
-  intensity?: number;
 }
 
 export interface PhysicsStepResult {

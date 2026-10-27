@@ -1,6 +1,7 @@
 import React from 'react';
-import { Trophy, Star, RotateCcw, ArrowRight, Grid } from 'lucide-react';
+import { Trophy, Star, RotateCcw, ArrowRight, Grid, Award } from 'lucide-react';
 import { TrackDefinition } from '../game/types';
+import { CelebrationCanvas } from './CelebrationCanvas';
 
 interface VictoryModalProps {
   track: TrackDefinition;
@@ -9,6 +10,8 @@ interface VictoryModalProps {
   stars: number;
   earnedCoins: number;
   isNewBest: boolean;
+  rank?: number;
+  difficultyLabel?: string;
   onReplay: () => void;
   onNextTrack: () => void;
   onLevelSelect: () => void;
@@ -21,6 +24,8 @@ export const VictoryModal: React.FC<VictoryModalProps> = ({
   stars,
   earnedCoins,
   isNewBest,
+  rank = 1,
+  difficultyLabel,
   onReplay,
   onNextTrack,
   onLevelSelect,
@@ -28,22 +33,31 @@ export const VictoryModal: React.FC<VictoryModalProps> = ({
   const formattedTime = time.toFixed(2);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 select-none">
-      <div className="relative w-full max-w-md bg-slate-900 border border-slate-700 rounded-2xl p-6 shadow-2xl flex flex-col text-center">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 select-none overflow-hidden">
+      {/* 1. Fireworks / Particle Celebration */}
+      <CelebrationCanvas />
+
+      {/* 2. Main Modal Card */}
+      <div className="relative z-10 w-full max-w-md bg-slate-900 border border-slate-700 rounded-2xl p-6 shadow-2xl flex flex-col text-center">
         {/* Trophy Header */}
-        <div className="mx-auto w-14 h-14 rounded-full bg-amber-500/20 border border-amber-500/60 flex items-center justify-center mb-3">
+        <div className="mx-auto w-14 h-14 rounded-full bg-amber-500/20 border border-amber-500/60 flex items-center justify-center mb-3 shadow-[0_0_20px_rgba(245,158,11,0.3)]">
           <Trophy className="w-8 h-8 text-amber-400" />
         </div>
 
         <h2 className="text-2xl font-black text-white tracking-wider uppercase">
           COURSE COMPLETED!
         </h2>
-        <p className="text-xs text-slate-400 mb-4">
+        <p className="text-xs text-slate-400 mb-2">
           Course: <span className="font-semibold text-cyan-400">{track.name}</span>
+          {difficultyLabel && (
+            <span className="ml-2 text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">
+              {difficultyLabel}
+            </span>
+          )}
         </p>
 
         {/* Stars */}
-        <div className="flex items-center justify-center gap-2 mb-6">
+        <div className="flex items-center justify-center gap-2 my-4">
           {[1, 2, 3].map((s) => (
             <div
               key={s}
@@ -63,7 +77,7 @@ export const VictoryModal: React.FC<VictoryModalProps> = ({
         </div>
 
         {/* Stats Grid */}
-        <div className="grid grid-cols-3 gap-2 p-3 bg-slate-800/80 border border-slate-700 rounded-xl mb-4 text-center">
+        <div className="grid grid-cols-4 gap-2 p-3 bg-slate-800/80 border border-slate-700 rounded-xl mb-4 text-center">
           <div>
             <span className="text-[10px] text-slate-400 uppercase font-semibold block">
               TIME
@@ -76,6 +90,17 @@ export const VictoryModal: React.FC<VictoryModalProps> = ({
                 NEW BEST!
               </span>
             )}
+          </div>
+
+          <div>
+            <span className="text-[10px] text-slate-400 uppercase font-semibold block">
+              RANK
+            </span>
+            <div className="flex items-center justify-center gap-0.5 text-amber-400 font-mono font-bold text-base">
+              <Award className="w-3.5 h-3.5" />
+              <span>#{rank}</span>
+            </div>
+            <span className="text-[9px] text-slate-400 uppercase block">TOP 10</span>
           </div>
 
           <div>
