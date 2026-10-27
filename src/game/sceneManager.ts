@@ -54,6 +54,7 @@ export class SceneManager {
   private isDestroyed = false;
 
   private currentTrack: TrackDefinition;
+  private activeTrack: TrackDefinition;
   private builtTrack: BuiltTrack | null = null;
   private ballVisual: BallVisualInstance | null = null;
   private ballPhysics: BallPhysicsState;
@@ -99,6 +100,7 @@ export class SceneManager {
   ) {
     this.container = container;
     this.currentTrack = track;
+    this.activeTrack = track;
     this.adaptiveState = adaptiveState;
     this.callbacks = callbacks;
 
@@ -200,7 +202,11 @@ export class SceneManager {
     this.loadTrack(this.currentTrack, adaptiveState);
   }
 
-  public loadTrack(track: TrackDefinition, adaptiveState: AdaptiveDifficultyState | null = this.adaptiveState) {
+  public loadTrack(
+    track: TrackDefinition,
+    adaptiveState: AdaptiveDifficultyState | null = this.adaptiveState,
+    startPlaying = false
+  ) {
     if (this.builtTrack) {
       this.scene.remove(this.builtTrack.group);
       this.builtTrack.dispose();
@@ -219,6 +225,7 @@ export class SceneManager {
     const activeTrackDef = adaptiveState
       ? applyAdaptiveTrackModifications(track, adaptiveState)
       : track;
+    this.activeTrack = activeTrackDef;
 
     this.builtTrack = buildTrack3D(activeTrackDef);
     this.scene.add(this.builtTrack.group);
@@ -235,6 +242,35 @@ export class SceneManager {
     this.ballPhysics = createInitialBallState(track.spawnPoint);
     this.runTimer = 0;
     this.trackElapsedTime = 0;
+    this.activeCheckpointSplit = undefined;
+    this.wasOnGround = true;
+    this.previousVelocityY = 0;
+    this.cameraRotationShake = 0;
+    this.currentCameraBank = 0;
+
+    // Clear particles and reset ball visual rotation
+    if (this.ballVisual) {
+      this.ballVisual.clearParticles();
+      this._ballEuler.set(0, 0, 0);
+      this.ballVisual.update(
+        this.ballPhysics.position,
+        this._ballEuler,
+        track.spawnPoint.y,
+        true,
+        0.016,
+        0
+      );
+    }
+
+    // Immediately snap camera to the new track's spawn point (eliminates camera lag / void flying)
+    const sp = track.spawnPoint;
+    this.camera.position.set(sp.x, sp.y + 3.2, sp.z + 7.5);
+    this._camLookTarget.set(sp.x, sp.y + 1.2, sp.z - 9.0);
+    this.camera.lookAt(this._camLookTarget);
+
+    if (startPlaying) {
+      this.setMode('playing');
+    }
   }
 
   public setupBallVisual(skin: BallSkin, trail: BallTrail, config?: TrailCustomConfig) {
@@ -261,9 +297,31 @@ export class SceneManager {
   public restartCurrentTrack() {
     this.ballPhysics = createInitialBallState(this.currentTrack.spawnPoint);
     this.runTimer = 0;
+    this.trackElapsedTime = 0;
+    this.activeCheckpointSplit = undefined;
+    this.wasOnGround = true;
+    this.previousVelocityY = 0;
+    this.cameraRotationShake = 0;
+    this.currentCameraBank = 0;
+
     if (this.ballVisual) {
       this.ballVisual.clearParticles();
+      this._ballEuler.set(0, 0, 0);
+      this.ballVisual.update(
+        this.ballPhysics.position,
+        this._ballEuler,
+        this.currentTrack.spawnPoint.y,
+        true,
+        0.016,
+        0
+      );
     }
+
+    const sp = this.currentTrack.spawnPoint;
+    this.camera.position.set(sp.x, sp.y + 3.2, sp.z + 7.5);
+    this._camLookTarget.set(sp.x, sp.y + 1.2, sp.z - 9.0);
+    this.camera.lookAt(this._camLookTarget);
+
     this.setMode('playing');
   }
 
@@ -411,7 +469,7 @@ export class SceneManager {
       const physResult = stepPhysics(
         this.ballPhysics,
         input,
-        this.currentTrack,
+        this.activeTrack,
         dt,
         this.trackElapsedTime
       );
@@ -423,13 +481,13 @@ export class SceneManager {
           sound.playCheckpoint();
           haptics.checkpoint();
           if (this.ballVisual) this.ballVisual.emitBurst(ev.position, 16);
-          const cpObs = this.currentTrack.obstacles.find(
+          const cpObs = this.activeTrack.obstacles.find(
             (o) => o.id === ev.obstacleId
           );
           const name = (cpObs as any)?.name || `Checkpoint ${this.ballPhysics.lastCheckpointIndex}`;
           
           // Split calculation against gold pace
-          const totalCps = this.currentTrack.obstacles.filter((o) => o.type === 'checkpoint').length;
+          const totalCps = this.activeTrack.obstacles.filter((o) => o.type === 'checkpoint').length;
           const expectedGoldSplit = (this.currentTrack.targetTimes.gold / (totalCps + 1)) * this.ballPhysics.lastCheckpointIndex;
           const deltaGold = this.runTimer - expectedGoldSplit;
           this.activeCheckpointSplit = {
@@ -484,12 +542,7 @@ export class SceneManager {
       this._ballEuler.x += this.ballPhysics.angularVelocity.x * dt;
       this._ballEuler.z += this.ballPhysics.angularVelocity.z * dt;
 
-      const groundInfo = getGroundAt(
-        this.ballPhysics.position,
-        this.ballPhysics.radius,
-        this.currentTrack.segments
-      );
-      const groundY = groundInfo ? groundInfo.groundY : -20;
+      const groundY = this.ballPhysics.onGround ? this.ballPhysics.position.y - this.ballPhysics.radius : -20;
 
       if (this.ballVisual) {
         this.ballVisual.update(

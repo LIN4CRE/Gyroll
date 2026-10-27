@@ -255,3 +255,35 @@ test('getGroundAt accurately tracks angled chicane centerline', () => {
   assert.equal(groundOff, null, 'Beyond width of angled segment must be null');
 });
 
+test('Round 2 (Neon Citadel) initializes cleanly on ground and rolls forward without freezing', async () => {
+  const { TRACKS } = await import('./tracks');
+  const track2 = TRACKS[1];
+  assert.equal(track2.id, 'neon_citadel');
+
+  const ball = createInitialBallState(track2.spawnPoint);
+  assert.equal(ball.onGround, true);
+  assert.equal(ball.position.x, track2.spawnPoint.x);
+  assert.equal(ball.position.z, track2.spawnPoint.z);
+
+  // Advance several physics steps on Track 2
+  let current = ball;
+  for (let i = 0; i < 30; i++) {
+    const res = stepPhysics(
+      current,
+      { steer: 0, throttle: 0, brake: false, resetRequested: false },
+      track2,
+      0.016,
+      i * 0.016
+    );
+    current = res.state;
+  }
+
+  // Ensure ball has progressed forward in negative Z and is not frozen
+  assert.ok(
+    current.position.z < track2.spawnPoint.z - 1.0,
+    `Ball must advance forward along track 2 (current Z: ${current.position.z}, spawn Z: ${track2.spawnPoint.z})`
+  );
+  assert.ok(current.velocity.z < -2.0, 'Ball must maintain forward velocity');
+  assert.equal(current.onGround, true, 'Ball must maintain ground contact on track 2');
+});
+

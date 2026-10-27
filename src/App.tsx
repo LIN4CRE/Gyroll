@@ -256,13 +256,18 @@ export default function App() {
   }, [gameState, activeModal, progress, selectedTrack]);
 
   // Actions
-  const handleStartGame = () => {
+  const handleStartGame = (trackToStart?: TrackDefinition) => {
     sound.ensureRunning();
     sound.playClick();
+    const track = trackToStart || selectedTrack;
+    if (trackToStart) {
+      setSelectedTrack(trackToStart);
+    }
     if (sceneManagerRef.current) {
       sceneManagerRef.current.loadTrack(
-        selectedTrack,
-        progress.settings.enableAdaptiveDifficulty ? progress.adaptiveDifficulty : null
+        track,
+        progress.settings.enableAdaptiveDifficulty ? progress.adaptiveDifficulty : null,
+        true
       );
       sceneManagerRef.current.setMode('playing');
     }
@@ -308,16 +313,8 @@ export default function App() {
   };
 
   const handleSelectTrack = (track: TrackDefinition) => {
-    sound.playClick();
-    setSelectedTrack(track);
-    if (sceneManagerRef.current) {
-      sceneManagerRef.current.loadTrack(
-        track,
-        progress.settings.enableAdaptiveDifficulty ? progress.adaptiveDifficulty : null
-      );
-    }
     setActiveModal('none');
-    handleStartGame();
+    handleStartGame(track);
   };
 
   const handleNextTrack = () => {
@@ -329,8 +326,10 @@ export default function App() {
     if (sceneManagerRef.current) {
       sceneManagerRef.current.loadTrack(
         nextTrack,
-        progress.settings.enableAdaptiveDifficulty ? progress.adaptiveDifficulty : null
+        progress.settings.enableAdaptiveDifficulty ? progress.adaptiveDifficulty : null,
+        true
       );
+      sceneManagerRef.current.setMode('playing');
     }
     setGameState('playing');
     document.body.dataset.state = 'playing';
