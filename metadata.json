@@ -1,0 +1,6 @@
+{
+  "name": "Gyro Roll — 3D Physics Obstacle Course",
+  "description": "High-precision 3D rolling ball obstacle course with phone tilt and gyro steering, challenging physics tracks, and unlockable custom balls.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
