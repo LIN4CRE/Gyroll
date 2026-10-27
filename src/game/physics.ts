@@ -42,8 +42,64 @@ export interface PhysicsStepResult {
 }
 
 /**
+ * Precomputed spatial cache for track segments.
+ * Eliminates repeated Math.min, Math.max, Math.hypot, and divisions per frame.
+ */
+interface SegmentSpatialCache {
+  minZ: number;
+  maxZ: number;
+  startX: number;
+  startY: number;
+  startZ: number;
+  deltaX: number;
+  deltaY: number;
+  deltaZ: number;
+  invZRange: number;
+  halfWidth: number;
+  ny: number;
+  nz: number;
+  railH: number;
+}
+
+const segmentCacheMap = new WeakMap<TrackSegment, SegmentSpatialCache>();
+
+function getSegmentCache(seg: TrackSegment): SegmentSpatialCache {
+  let cached = segmentCacheMap.get(seg);
+  if (!cached) {
+    const minZ = Math.min(seg.startZ, seg.endZ) - 0.45;
+    const maxZ = Math.max(seg.startZ, seg.endZ) + 0.45;
+    const deltaX = seg.endX - seg.startX;
+    const deltaY = seg.endY - seg.startY;
+    const deltaZ = seg.endZ - seg.startZ;
+    const invZRange = Math.abs(deltaZ) > 0.001 ? 1 / deltaZ : 0;
+    const len = Math.hypot(deltaY, deltaZ);
+    const ny = len > 0.001 ? Math.abs(deltaZ) / len : 1;
+    const nz = len > 0.001 ? -deltaY / len : 0;
+
+    cached = {
+      minZ,
+      maxZ,
+      startX: seg.startX,
+      startY: seg.startY,
+      startZ: seg.startZ,
+      deltaX,
+      deltaY,
+      deltaZ,
+      invZRange,
+      halfWidth: seg.width * 0.5,
+      ny,
+      nz,
+      railH: seg.railHeight ?? 1.2,
+    };
+    segmentCacheMap.set(seg, cached);
+  }
+  return cached;
+}
+
+/**
  * Checks if the ball is touching or intersecting a track segment.
  * Includes deep penetration check (up to 3.0 units) to guarantee the ball NEVER tunnels through the floor.
+ * Uses cached segment bounding boxes to skip non-candidate segments with single-instruction comparisons.
  */
 export function getGroundAt(
   position: Vector3D,
@@ -65,51 +121,47 @@ export function getGroundAt(
   } | null = null;
   let minAbsPenetration = Infinity;
 
-  for (const seg of segments) {
-    // Segments extend from start to end along Z (typically startZ > endZ as we go in -Z direction)
-    const minZ = Math.min(seg.startZ, seg.endZ) - 0.4;
-    const maxZ = Math.max(seg.startZ, seg.endZ) + 0.4;
+  const pX = position.x;
+  const pY = position.y;
+  const pZ = position.z;
+  const lateralTolerance = radius * 0.45;
 
-    if (position.z >= minZ && position.z <= maxZ) {
-      // Calculate fraction along segment
-      const zRange = seg.endZ - seg.startZ;
-      const t = Math.abs(zRange) > 0.001 ? (position.z - seg.startZ) / zRange : 0;
-      const clampedT = Math.max(0, Math.min(1, t));
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    const c = getSegmentCache(seg);
 
-      const segCenterX = seg.startX + clampedT * (seg.endX - seg.startX);
-      const segY = seg.startY + clampedT * (seg.endY - seg.startY);
+    // Fast bounding box reject on Z
+    if (pZ < c.minZ || pZ > c.maxZ) {
+      continue;
+    }
 
-      const halfWidth = seg.width / 2;
-      const distFromCenter = Math.abs(position.x - segCenterX);
+    // Fraction along segment
+    const t = (pZ - c.startZ) * c.invZRange;
+    const clampedT = t <= 0 ? 0 : t >= 1 ? 1 : t;
 
-      // Check lateral track bounds
-      if (distFromCenter <= halfWidth + radius * 0.45) {
-        const surfaceY = segY;
-        const targetBallY = surfaceY + radius;
-        const penetration = targetBallY - position.y;
+    const segCenterX = c.startX + clampedT * c.deltaX;
+    const distFromCenter = Math.abs(pX - segCenterX);
 
-        // Ground detection threshold:
-        // Allow penetration up to 3.0 units to catch fast descents and prevent floor tunneling,
-        // while allowing up to 0.35 units above surface to register smooth ground contact.
-        if (penetration >= -0.35 && penetration <= 3.0) {
-          if (Math.abs(penetration) < minAbsPenetration) {
-            minAbsPenetration = Math.abs(penetration);
+    // Lateral track bounds check
+    if (distFromCenter <= c.halfWidth + lateralTolerance) {
+      const surfaceY = c.startY + clampedT * c.deltaY;
+      const targetBallY = surfaceY + radius;
+      const penetration = targetBallY - pY;
 
-            // Compute segment normal
-            const dy = seg.endY - seg.startY;
-            const dz = seg.endZ - seg.startZ;
-            const len = Math.hypot(dy, dz);
-            const ny = len > 0.001 ? Math.abs(dz) / len : 1;
-            const nz = len > 0.001 ? -dy / len : 0;
-
-            bestCandidate = {
-              groundY: surfaceY,
-              normal: { x: 0, y: ny, z: nz },
-              surface: seg.surface,
-              segment: seg,
-              penetration,
-            };
-          }
+      // Ground detection threshold:
+      // Allow penetration up to 3.0 units to catch fast descents and prevent floor tunneling,
+      // while allowing up to 0.35 units above surface to register smooth ground contact.
+      if (penetration >= -0.35 && penetration <= 3.0) {
+        const absPen = Math.abs(penetration);
+        if (absPen < minAbsPenetration) {
+          minAbsPenetration = absPen;
+          bestCandidate = {
+            groundY: surfaceY,
+            normal: { x: 0, y: c.ny, z: c.nz },
+            surface: seg.surface,
+            segment: seg,
+            penetration,
+          };
         }
       }
     }
@@ -119,48 +171,48 @@ export function getGroundAt(
 }
 
 /**
- * Handle side barrier / rail collisions with strict clamping
+ * Handle side barrier / rail collisions with strict clamping and spatial culling
  */
 export function handleRailCollisions(
   state: BallPhysicsState,
   segments: TrackSegment[]
 ): boolean {
   let hitRail = false;
-  for (const seg of segments) {
+  const pX = state.position.x;
+  const pY = state.position.y;
+  const pZ = state.position.z;
+  const radius = state.radius;
+
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
     if (!seg.hasRails) continue;
 
-    const minZ = Math.min(seg.startZ, seg.endZ) - 0.2;
-    const maxZ = Math.max(seg.startZ, seg.endZ) + 0.2;
+    const c = getSegmentCache(seg);
+    if (pZ < c.minZ || pZ > c.maxZ) continue;
 
-    if (state.position.z >= minZ && state.position.z <= maxZ) {
-      const zRange = seg.endZ - seg.startZ;
-      const t = Math.abs(zRange) > 0.001 ? (state.position.z - seg.startZ) / zRange : 0;
-      const clampedT = Math.max(0, Math.min(1, t));
-      const segCenterX = seg.startX + clampedT * (seg.endX - seg.startX);
-      const segY = seg.startY + clampedT * (seg.endY - seg.startY);
+    const t = (pZ - c.startZ) * c.invZRange;
+    const clampedT = t <= 0 ? 0 : t >= 1 ? 1 : t;
+    const segCenterX = c.startX + clampedT * c.deltaX;
+    const segY = c.startY + clampedT * c.deltaY;
 
-      const halfWidth = seg.width / 2;
-      const railH = seg.railHeight ?? 1.2;
-
-      // Ball height relative to segment
-      if (state.position.y >= segY - 0.5 && state.position.y <= segY + railH + 0.6) {
-        // Left rail
-        const leftRailX = segCenterX - halfWidth;
-        if (state.position.x - state.radius < leftRailX) {
-          state.position.x = leftRailX + state.radius;
-          if (state.velocity.x < 0) {
-            state.velocity.x = -state.velocity.x * RESTITUTION;
-            hitRail = true;
-          }
+    // Ball height relative to segment
+    if (pY >= segY - 0.5 && pY <= segY + c.railH + 0.6) {
+      // Left rail
+      const leftRailX = segCenterX - c.halfWidth;
+      if (pX - radius < leftRailX) {
+        state.position.x = leftRailX + radius;
+        if (state.velocity.x < 0) {
+          state.velocity.x = -state.velocity.x * RESTITUTION;
+          hitRail = true;
         }
-        // Right rail
-        const rightRailX = segCenterX + halfWidth;
-        if (state.position.x + state.radius > rightRailX) {
-          state.position.x = rightRailX - state.radius;
-          if (state.velocity.x > 0) {
-            state.velocity.x = -state.velocity.x * RESTITUTION;
-            hitRail = true;
-          }
+      }
+      // Right rail
+      const rightRailX = segCenterX + c.halfWidth;
+      if (pX + radius > rightRailX) {
+        state.position.x = rightRailX - radius;
+        if (state.velocity.x > 0) {
+          state.velocity.x = -state.velocity.x * RESTITUTION;
+          hitRail = true;
         }
       }
     }
@@ -169,7 +221,7 @@ export function handleRailCollisions(
 }
 
 /**
- * Evaluate obstacle collisions and movement
+ * Evaluate obstacle collisions and movement with tight spatial culling
  */
 export function checkObstacleCollisions(
   state: BallPhysicsState,
@@ -177,16 +229,20 @@ export function checkObstacleCollisions(
   elapsedTime: number
 ): CollisionEvent[] {
   const events: CollisionEvent[] = [];
+  const pX = state.position.x;
+  const pY = state.position.y;
+  const pZ = state.position.z;
+  const radius = state.radius;
 
-  for (const obs of obstacles) {
-    // Early Z-distance culling
-    if (Math.abs(state.position.z - obs.position.z) > 10) continue;
+  for (let i = 0; i < obstacles.length; i++) {
+    const obs = obstacles[i];
+    const dZ = Math.abs(pZ - obs.position.z);
 
     if (obs.type === 'checkpoint') {
-      const distZ = Math.abs(state.position.z - obs.position.z);
-      const distX = Math.abs(state.position.x - obs.position.x);
-      const distY = Math.abs(state.position.y - obs.position.y);
-      if (distZ < 1.2 && distX < obs.size.x / 2 + 0.5 && distY < obs.size.y + 0.5) {
+      if (dZ > 1.5) continue;
+      const distX = Math.abs(pX - obs.position.x);
+      const distY = Math.abs(pY - obs.position.y);
+      if (dZ < 1.2 && distX < obs.size.x * 0.5 + 0.5 && distY < obs.size.y + 0.5) {
         if (state.lastCheckpointIndex < obs.index) {
           state.lastCheckpointIndex = obs.index;
           events.push({
@@ -200,9 +256,9 @@ export function checkObstacleCollisions(
     }
 
     if (obs.type === 'finish_gate') {
-      const distZ = Math.abs(state.position.z - obs.position.z);
-      const distX = Math.abs(state.position.x - obs.position.x);
-      if (distZ < 1.0 && distX < obs.size.x / 2 + 0.8) {
+      if (dZ > 1.5) continue;
+      const distX = Math.abs(pX - obs.position.x);
+      if (dZ < 1.0 && distX < obs.size.x * 0.5 + 0.8) {
         events.push({
           type: 'finish',
           position: { ...obs.position },
@@ -213,6 +269,13 @@ export function checkObstacleCollisions(
     }
 
     if (obs.type === 'swinging_hammer') {
+      // Early cull: hammer head only extends by headRadius along Z; arm swings in X/Y plane
+      const maxReachZ = obs.headRadius + radius + 0.4;
+      if (dZ > maxReachZ) continue;
+
+      const maxReachX = obs.armLength + obs.headRadius + radius + 0.4;
+      if (Math.abs(pX - obs.position.x) > maxReachX) continue;
+
       // Calculate current head position
       const theta = Math.sin(elapsedTime * obs.speed + obs.phase) * obs.maxAngle;
       const pivotY = obs.position.y + obs.pivotHeight;
@@ -220,11 +283,11 @@ export function checkObstacleCollisions(
       const headY = pivotY - Math.cos(theta) * obs.armLength;
       const headZ = obs.position.z;
 
-      const dx = state.position.x - headX;
-      const dy = state.position.y - headY;
-      const dz = state.position.z - headZ;
+      const dx = pX - headX;
+      const dy = pY - headY;
+      const dz = pZ - headZ;
       const dist = Math.hypot(dx, dy, dz);
-      const combinedRadius = state.radius + obs.headRadius;
+      const combinedRadius = radius + obs.headRadius;
 
       if (dist < combinedRadius) {
         // Tangential hammer velocity for kinetic push
@@ -252,11 +315,12 @@ export function checkObstacleCollisions(
     }
 
     if (obs.type === 'rotating_bar') {
-      const currentAngle = obs.initialAngle + elapsedTime * obs.speed;
-      const halfLen = obs.length / 2;
+      const halfLen = obs.length * 0.5;
+      const maxReach = halfLen + radius + obs.thickness * 0.5 + 0.2;
+      if (dZ > maxReach) continue;
+      if (Math.abs(pX - obs.position.x) > maxReach) continue;
 
-      // Check collision with rotating cylinder/segment
-      // Segment line: pos + (cos(angle)*halfLen, 0, sin(angle)*halfLen) or in Y/Z
+      const currentAngle = obs.initialAngle + elapsedTime * obs.speed;
       const cosA = Math.cos(currentAngle);
       const sinA = Math.sin(currentAngle);
 
@@ -285,24 +349,20 @@ export function checkObstacleCollisions(
       const segDz = barEndZ - barStartZ;
       const segLenSq = segDx * segDx + segDy * segDy + segDz * segDz;
 
-      const px = state.position.x - barStartX;
-      const py = state.position.y - barStartY;
-      const pz = state.position.z - barStartZ;
+      const px = pX - barStartX;
+      const py = pY - barStartY;
+      const pz = pZ - barStartZ;
 
       const proj = segLenSq > 0 ? (px * segDx + py * segDy + pz * segDz) / segLenSq : 0;
-      const clampedProj = Math.max(0, Math.min(1, proj));
+      const clampedProj = proj <= 0 ? 0 : proj >= 1 ? 1 : proj;
 
       const closestX = barStartX + clampedProj * segDx;
       const closestY = barStartY + clampedProj * segDy;
       const closestZ = barStartZ + clampedProj * segDz;
 
-      const dist = Math.hypot(
-        state.position.x - closestX,
-        state.position.y - closestY,
-        state.position.z - closestZ
-      );
+      const dist = Math.hypot(pX - closestX, pY - closestY, pZ - closestZ);
 
-      if (dist < state.radius + obs.thickness / 2) {
+      if (dist < radius + obs.thickness * 0.5) {
         // Tangential kick
         const pushDirX = -sinA * Math.sign(obs.speed);
         const pushDirZ = cosA * Math.sign(obs.speed);
@@ -322,22 +382,21 @@ export function checkObstacleCollisions(
     }
 
     if (obs.type === 'rolling_boulder') {
+      const maxZReach = obs.radius + radius + 0.5;
+      if (dZ > maxZReach) continue;
+
       const patrolRange = obs.patrolMaxX - obs.patrolMinX;
       const cycle = Math.sin(elapsedTime * obs.speed);
-      const boulderX = obs.patrolMinX + ((cycle + 1) / 2) * patrolRange;
+      const boulderX = obs.patrolMinX + ((cycle + 1) * 0.5) * patrolRange;
       const boulderY = obs.position.y + obs.radius;
       const boulderZ = obs.position.z;
 
-      const dist = Math.hypot(
-        state.position.x - boulderX,
-        state.position.y - boulderY,
-        state.position.z - boulderZ
-      );
+      const dist = Math.hypot(pX - boulderX, pY - boulderY, pZ - boulderZ);
 
-      if (dist < state.radius + obs.radius) {
-        const dx = state.position.x - boulderX;
-        const dy = state.position.y - boulderY;
-        const dz = state.position.z - boulderZ;
+      if (dist < radius + obs.radius) {
+        const dx = pX - boulderX;
+        const dy = pY - boulderY;
+        const dz = pZ - boulderZ;
         const d = Math.max(0.001, dist);
 
         state.velocity.x = (dx / d) * 12;
@@ -355,20 +414,21 @@ export function checkObstacleCollisions(
     }
 
     if (obs.type === 'slalom_gate') {
-      // Two vertical poles at left and right of gate
-      const halfW = obs.size.x / 2;
+      if (dZ > obs.poleRadius + radius + 0.5) continue;
+
+      const halfW = obs.size.x * 0.5;
       const leftPoleX = obs.position.x - halfW;
       const rightPoleX = obs.position.x + halfW;
 
       for (const poleX of [leftPoleX, rightPoleX]) {
-        const dx = state.position.x - poleX;
-        const dz = state.position.z - obs.position.z;
+        const dx = pX - poleX;
+        const dz = pZ - obs.position.z;
         const dist2D = Math.hypot(dx, dz);
 
         if (
-          dist2D < state.radius + obs.poleRadius &&
-          state.position.y >= obs.position.y &&
-          state.position.y <= obs.position.y + obs.poleHeight
+          dist2D < radius + obs.poleRadius &&
+          pY >= obs.position.y &&
+          pY <= obs.position.y + obs.poleHeight
         ) {
           const d = Math.max(0.001, dist2D);
           state.velocity.x = (dx / d) * 8;
@@ -376,7 +436,7 @@ export function checkObstacleCollisions(
 
           events.push({
             type: 'obstacle',
-            position: { x: poleX, y: state.position.y, z: obs.position.z },
+            position: { x: poleX, y: pY, z: obs.position.z },
             obstacleId: obs.id,
             intensity: 0.6,
           });
@@ -389,7 +449,7 @@ export function checkObstacleCollisions(
 }
 
 /**
- * Main physics step with fixed delta time sub-stepping
+ * Main physics step with adaptive sub-step integration and low-latency collision resolution
  */
 export function stepPhysics(
   state: BallPhysicsState,
@@ -435,16 +495,19 @@ export function stepPhysics(
     return { state, events };
   }
 
-  // Clamp dt to avoid physics blowups on background tabs
+  // Clamp dt to avoid spiral of death on background tabs or system lag spikes
   const clampedDt = Math.min(dt, 0.05);
-  // Perform 2 micro-substeps for stability
-  const subSteps = 2;
+
+  // Adaptive sub-step integration:
+  // At high/normal framerates (dt <= 0.018s, ~60-120fps), 1 step is fast, rock-solid, and halves CPU usage.
+  // When frame time drops on lower-end devices (dt > 0.018s), 2 sub-steps maintain precision and prevent tunneling.
+  const subSteps = clampedDt > 0.018 ? 2 : 1;
   const subDt = clampedDt / subSteps;
 
-  for (let s = 0; s < subSteps; s++) {
-    // 1. Check ground support
-    const groundInfo = getGroundAt(state.position, state.radius, track.segments);
+  // Initial ground check for the first sub-step
+  let groundInfo = getGroundAt(state.position, state.radius, track.segments);
 
+  for (let s = 0; s < subSteps; s++) {
     let friction = ROLLING_FRICTION;
     let surfaceType: TrackSegment['surface'] = 'normal';
 
@@ -495,7 +558,6 @@ export function stepPhysics(
     }
 
     // 3. Forward rolling propulsion
-    // Player naturally rolls forward, with tilt or throttle giving control
     let forwardAccel = BASE_FORWARD_ACCEL;
     if (input.brake) {
       forwardAccel = -BASE_FORWARD_ACCEL * 1.8;
@@ -505,7 +567,7 @@ export function stepPhysics(
       forwardAccel += input.throttle * 10;
     }
 
-    // Only apply forward propulsion if on ground or moving forward
+    // Only apply forward propulsion if on ground
     if (state.onGround) {
       state.velocity.z -= forwardAccel * subDt;
       // Cap max forward speed (negative Z direction)
@@ -518,9 +580,14 @@ export function stepPhysics(
       }
     }
 
-    // 4. Lateral Steering (Tilt left/right)
+    // 4. Lateral Steering (Snappy and responsive on mobile and keyboard)
     const steerInput = Math.max(-1, Math.min(1, input.steer));
-    const steerForce = steerInput * STEER_FORCE;
+    let steerForce = steerInput * STEER_FORCE;
+
+    // Counter-steer responsiveness boost: if player reverses steering direction, provide snappy recovery
+    if (steerInput * state.velocity.x < -0.1) {
+      steerForce *= 1.25;
+    }
 
     if (state.onGround) {
       const tractionFactor = surfaceType === 'ice' ? 0.25 : 1.0;
@@ -537,9 +604,17 @@ export function stepPhysics(
     );
 
     // Apply friction/drag
-    state.velocity.x *= Math.pow(friction, subDt * 60);
+    const frictionFactorX = Math.pow(friction, subDt * 60);
+    state.velocity.x *= frictionFactorX;
+
+    // Extra center-stabilization when neutral steer on ground: prevents annoying slow drift
+    if (state.onGround && Math.abs(steerInput) < 0.05 && surfaceType !== 'ice') {
+      state.velocity.x *= 0.98;
+    }
+
     if (state.onGround) {
-      state.velocity.z *= Math.pow(friction, subDt * 30);
+      const frictionFactorZ = Math.pow(friction, subDt * 30);
+      state.velocity.z *= frictionFactorZ;
     }
 
     // 5. Integrate Position
@@ -555,16 +630,12 @@ export function stepPhysics(
       state.onGround = true;
       state.groundSurface = postGround.surface;
     }
+    // Carry over resolved ground state to subsequent sub-step without redundant search
+    groundInfo = postGround;
 
-    // 6. Angular Velocity (Pure physical rolling rotation!)
-    // Rolling condition: omega = v / R
-    // Rolling along Z causes rotation around X: omega_x = -vz / R
-    // Rolling along X causes rotation around Z: omega_z = vx / R
-    const targetOmegaX = -state.velocity.z / state.radius;
-    const targetOmegaZ = state.velocity.x / state.radius;
-
-    state.angularVelocity.x = targetOmegaX;
-    state.angularVelocity.z = targetOmegaZ;
+    // 6. Angular Velocity (Pure physical rolling rotation)
+    state.angularVelocity.x = -state.velocity.z / state.radius;
+    state.angularVelocity.z = state.velocity.x / state.radius;
     state.angularVelocity.y *= 0.95; // damp yaw
 
     // 7. Check Rails
