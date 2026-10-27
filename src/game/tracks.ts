@@ -9,9 +9,9 @@ export const TRACKS: TrackDefinition[] = [
     themeColor: '#38bdf8', // sky blue
     weather: 'snow',
     targetTimes: {
-      gold: 22.0,
-      silver: 32.0,
-      bronze: 48.0,
+      gold: 26.0,
+      silver: 38.0,
+      bronze: 55.0,
     },
     rewardCoins: 120,
     spawnPoint: { x: 0, y: 0, z: 5 },
@@ -195,9 +195,9 @@ export const TRACKS: TrackDefinition[] = [
     themeColor: '#a855f7', // purple / neon violet
     weather: 'rain',
     targetTimes: {
-      gold: 32.0,
-      silver: 46.0,
-      bronze: 65.0,
+      gold: 38.0,
+      silver: 52.0,
+      bronze: 75.0,
     },
     rewardCoins: 220,
     spawnPoint: { x: 0, y: 0, z: 5 },
@@ -418,9 +418,9 @@ export const TRACKS: TrackDefinition[] = [
     themeColor: '#f97316', // molten orange / amber
     weather: 'embers',
     targetTimes: {
-      gold: 42.0,
-      silver: 58.0,
-      bronze: 85.0,
+      gold: 48.0,
+      silver: 66.0,
+      bronze: 95.0,
     },
     rewardCoins: 350,
     spawnPoint: { x: 0, y: 0, z: 5 },

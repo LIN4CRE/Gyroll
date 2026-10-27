@@ -176,3 +176,48 @@ test('calculateStars awards correct medals based on time and falls', () => {
   assert.equal(bronze.stars, 1);
   assert.equal(bronze.isBronze, true);
 });
+
+test('getGroundAt and stepPhysics prevent ball from rolling through track floor', () => {
+  const ball = createInitialBallState(mockTrack.spawnPoint);
+  // Simulate ball having dipped below ground surface (e.g. y = -0.5 on a surface at y = 0)
+  ball.position = { x: 0, y: -0.5, z: -15 };
+  ball.velocity = { x: 0, y: -8, z: -10 };
+
+  const ground = getGroundAt(ball.position, ball.radius, mockTrack.segments);
+  assert.ok(ground !== null, 'Ground must be detected even when ball has penetrated below surface');
+  assert.ok(ground!.penetration > 0, 'Penetration should be positive');
+
+  const result = stepPhysics(
+    ball,
+    { steer: 0, throttle: 0, brake: false, resetRequested: false },
+    mockTrack,
+    0.016,
+    0.016
+  );
+
+  // Ball should be clamped cleanly onto track surface (y = groundY + radius = 0 + 0.5 = 0.5)
+  assert.equal(result.state.position.y, 0.5, 'Ball position Y must be snapped cleanly to surface');
+  assert.equal(result.state.velocity.y, 0, 'Downward Y velocity must be zeroed on surface');
+  assert.equal(result.state.onGround, true, 'Ball must be on ground');
+});
+
+test('stepPhysics respects speed limits and prevents uncontrollable runaway speed', () => {
+  const ball = createInitialBallState(mockTrack.spawnPoint);
+  ball.position = { x: 0, y: 0.5, z: -10 };
+  ball.velocity = { x: 0, y: 0, z: -50 }; // Excessive forward velocity
+
+  const result = stepPhysics(
+    ball,
+    { steer: 0, throttle: 1.0, brake: false, resetRequested: false },
+    mockTrack,
+    0.016,
+    0.016
+  );
+
+  // Ball forward velocity must be clamped to MAX_FORWARD_SPEED (-12.0)
+  assert.ok(
+    result.state.velocity.z >= -12.0,
+    `Forward velocity (${result.state.velocity.z}) must not exceed MAX_FORWARD_SPEED (-12.0)`
+  );
+});
+

@@ -8,13 +8,13 @@ import {
   Vector3D,
 } from './types';
 
-export const GRAVITY = -24;
+export const GRAVITY = -16;
 export const DEFAULT_BALL_RADIUS = 0.5;
 export const DEFAULT_BALL_MASS = 1.0;
-export const BASE_FORWARD_ACCEL = 14;
-export const MAX_FORWARD_SPEED = 24;
-export const STEER_FORCE = 32;
-export const MAX_LATERAL_SPEED = 14;
+export const BASE_FORWARD_ACCEL = 6.5;
+export const MAX_FORWARD_SPEED = 12.0;
+export const STEER_FORCE = 20;
+export const MAX_LATERAL_SPEED = 8.0;
 export const ROLLING_FRICTION = 0.985;
 export const ICE_FRICTION = 0.998;
 export const AIR_DRAG = 0.992;
@@ -22,9 +22,9 @@ export const RESTITUTION = 0.35; // bounce factor
 
 export function createInitialBallState(spawnPoint: Vector3D): BallPhysicsState {
   return {
-    position: { x: spawnPoint.x, y: spawnPoint.y + DEFAULT_BALL_RADIUS + 0.1, z: spawnPoint.z },
-    velocity: { x: 0, y: 0, z: -2.0 },
-    angularVelocity: { x: 2.0 / DEFAULT_BALL_RADIUS, y: 0, z: 0 },
+    position: { x: spawnPoint.x, y: spawnPoint.y + DEFAULT_BALL_RADIUS, z: spawnPoint.z },
+    velocity: { x: 0, y: 0, z: -1.0 },
+    angularVelocity: { x: 1.0 / DEFAULT_BALL_RADIUS, y: 0, z: 0 },
     radius: DEFAULT_BALL_RADIUS,
     mass: DEFAULT_BALL_MASS,
     onGround: true,
@@ -42,7 +42,8 @@ export interface PhysicsStepResult {
 }
 
 /**
- * Checks if the ball is touching or intersecting a track segment
+ * Checks if the ball is touching or intersecting a track segment.
+ * Includes deep penetration check (up to 3.0 units) to guarantee the ball NEVER tunnels through the floor.
  */
 export function getGroundAt(
   position: Vector3D,
@@ -55,10 +56,19 @@ export function getGroundAt(
   segment: TrackSegment;
   penetration: number;
 } | null {
+  let bestCandidate: {
+    groundY: number;
+    normal: Vector3D;
+    surface: TrackSegment['surface'];
+    segment: TrackSegment;
+    penetration: number;
+  } | null = null;
+  let minAbsPenetration = Infinity;
+
   for (const seg of segments) {
     // Segments extend from start to end along Z (typically startZ > endZ as we go in -Z direction)
-    const minZ = Math.min(seg.startZ, seg.endZ) - 0.2;
-    const maxZ = Math.max(seg.startZ, seg.endZ) + 0.2;
+    const minZ = Math.min(seg.startZ, seg.endZ) - 0.4;
+    const maxZ = Math.max(seg.startZ, seg.endZ) + 0.4;
 
     if (position.z >= minZ && position.z <= maxZ) {
       // Calculate fraction along segment
@@ -72,37 +82,44 @@ export function getGroundAt(
       const halfWidth = seg.width / 2;
       const distFromCenter = Math.abs(position.x - segCenterX);
 
-      if (distFromCenter <= halfWidth + radius * 0.4) {
-        // Compute segment normal
-        const dy = seg.endY - seg.startY;
-        const dz = seg.endZ - seg.startZ;
-        const len = Math.hypot(dy, dz);
-        const ny = len > 0.001 ? Math.abs(dz) / len : 1;
-        const nz = len > 0.001 ? -dy / len : 0;
-
+      // Check lateral track bounds
+      if (distFromCenter <= halfWidth + radius * 0.45) {
         const surfaceY = segY;
         const targetBallY = surfaceY + radius;
         const penetration = targetBallY - position.y;
 
-        // Ground detection threshold
-        if (penetration >= -0.2 && penetration <= 1.2) {
-          return {
-            groundY: surfaceY,
-            normal: { x: 0, y: ny, z: nz },
-            surface: seg.surface,
-            segment: seg,
-            penetration,
-          };
+        // Ground detection threshold:
+        // Allow penetration up to 3.0 units to catch fast descents and prevent floor tunneling,
+        // while allowing up to 0.35 units above surface to register smooth ground contact.
+        if (penetration >= -0.35 && penetration <= 3.0) {
+          if (Math.abs(penetration) < minAbsPenetration) {
+            minAbsPenetration = Math.abs(penetration);
+
+            // Compute segment normal
+            const dy = seg.endY - seg.startY;
+            const dz = seg.endZ - seg.startZ;
+            const len = Math.hypot(dy, dz);
+            const ny = len > 0.001 ? Math.abs(dz) / len : 1;
+            const nz = len > 0.001 ? -dy / len : 0;
+
+            bestCandidate = {
+              groundY: surfaceY,
+              normal: { x: 0, y: ny, z: nz },
+              surface: seg.surface,
+              segment: seg,
+              penetration,
+            };
+          }
         }
       }
     }
   }
 
-  return null;
+  return bestCandidate;
 }
 
 /**
- * Handle side barrier / rail collisions
+ * Handle side barrier / rail collisions with strict clamping
  */
 export function handleRailCollisions(
   state: BallPhysicsState,
@@ -112,8 +129,8 @@ export function handleRailCollisions(
   for (const seg of segments) {
     if (!seg.hasRails) continue;
 
-    const minZ = Math.min(seg.startZ, seg.endZ);
-    const maxZ = Math.max(seg.startZ, seg.endZ);
+    const minZ = Math.min(seg.startZ, seg.endZ) - 0.2;
+    const maxZ = Math.max(seg.startZ, seg.endZ) + 0.2;
 
     if (state.position.z >= minZ && state.position.z <= maxZ) {
       const zRange = seg.endZ - seg.startZ;
@@ -126,7 +143,7 @@ export function handleRailCollisions(
       const railH = seg.railHeight ?? 1.2;
 
       // Ball height relative to segment
-      if (state.position.y >= segY - 0.2 && state.position.y <= segY + railH + 0.2) {
+      if (state.position.y >= segY - 0.5 && state.position.y <= segY + railH + 0.6) {
         // Left rail
         const leftRailX = segCenterX - halfWidth;
         if (state.position.x - state.radius < leftRailX) {
@@ -396,11 +413,11 @@ export function stepPhysics(
 
       state.position = {
         x: respawnPos.x,
-        y: respawnPos.y + state.radius + 0.3,
+        y: respawnPos.y + state.radius + 0.15,
         z: respawnPos.z,
       };
-      state.velocity = { x: 0, y: 0, z: -4.0 };
-      state.angularVelocity = { x: 4.0 / state.radius, y: 0, z: 0 };
+      state.velocity = { x: 0, y: 0, z: -2.0 };
+      state.angularVelocity = { x: 2.0 / state.radius, y: 0, z: 0 };
       state.onGround = true;
     }
     return { state, events };
@@ -436,17 +453,17 @@ export function stepPhysics(
       surfaceType = groundInfo.surface;
       state.groundSurface = surfaceType;
 
-      // Penetration resolution
+      // Clean penetration resolution: snap ball firmly onto the track surface (no mushy sinking)
       if (groundInfo.penetration > 0) {
-        state.position.y += groundInfo.penetration * 0.5;
+        state.position.y = groundInfo.groundY + state.radius;
         if (state.velocity.y < 0) {
           state.velocity.y = 0;
         }
       }
 
-      // Slope force along normal
+      // Slope force along normal (damped so ball does not wildly accelerate downhill)
       if (Math.abs(groundInfo.normal.z) > 0.01) {
-        state.velocity.z += groundInfo.normal.z * GRAVITY * subDt;
+        state.velocity.z += groundInfo.normal.z * (GRAVITY * 0.5) * subDt;
       }
 
       // Surface properties
@@ -459,7 +476,7 @@ export function stepPhysics(
           position: { ...state.position },
         });
       } else if (surfaceType === 'bouncy') {
-        state.velocity.y = 8;
+        state.velocity.y = 7.0;
         state.onGround = false;
         events.push({
           type: 'bounce',
@@ -481,11 +498,11 @@ export function stepPhysics(
     // Player naturally rolls forward, with tilt or throttle giving control
     let forwardAccel = BASE_FORWARD_ACCEL;
     if (input.brake) {
-      forwardAccel = -BASE_FORWARD_ACCEL * 1.5;
+      forwardAccel = -BASE_FORWARD_ACCEL * 1.8;
     } else if (input.throttle > 0.05) {
-      forwardAccel += input.throttle * 12;
+      forwardAccel += input.throttle * 8;
     } else if (input.throttle < -0.05) {
-      forwardAccel += input.throttle * 16;
+      forwardAccel += input.throttle * 10;
     }
 
     // Only apply forward propulsion if on ground or moving forward
@@ -494,9 +511,9 @@ export function stepPhysics(
       // Cap max forward speed (negative Z direction)
       if (state.velocity.z < -MAX_FORWARD_SPEED) {
         state.velocity.z = -MAX_FORWARD_SPEED;
-      } else if (state.velocity.z > 2.0) {
+      } else if (state.velocity.z > 1.5) {
         // Limit backward movement
-        state.velocity.z = 2.0;
+        state.velocity.z = 1.5;
       }
     }
 
@@ -528,6 +545,15 @@ export function stepPhysics(
     state.position.x += state.velocity.x * subDt;
     state.position.y += state.velocity.y * subDt;
     state.position.z += state.velocity.z * subDt;
+
+    // Continuous post-integration ground snap: guarantees ball never tunnels through floor
+    const postGround = getGroundAt(state.position, state.radius, track.segments);
+    if (postGround && postGround.penetration > 0 && state.velocity.y <= 0.1) {
+      state.position.y = postGround.groundY + state.radius;
+      state.velocity.y = 0;
+      state.onGround = true;
+      state.groundSurface = postGround.surface;
+    }
 
     // 6. Angular Velocity (Pure physical rolling rotation!)
     // Rolling condition: omega = v / R

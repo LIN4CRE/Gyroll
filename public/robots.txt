@@ -1,0 +1,11 @@
+# Robots.txt for Gyro Roll 3D
+# Allow search crawlers to index the game
+User-agent: *
+Allow: /
+
+# Disallow build cache or private internal assets if any
+Disallow: /api/
+Disallow: /node_modules/
+
+# Host reference
+# Sitemap: https://example.com/sitemap.xml
